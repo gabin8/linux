@@ -4,7 +4,9 @@
  */
 
 /dts-v1/;
+#include <dt-bindings/input/input.h>
 #include "mt6572.dtsi"
+#include "mt6323.dtsi"
 
 / {
 	model = "Lenovo A369i";
@@ -26,6 +28,7 @@
 			height = <800>;
 			stride = <(480 * 2)>;
 			format = "r5g6b5";
+			power-domains = <&spm MT6572_POWER_DOMAIN_DIS>;
 		};
 	};
 
@@ -49,8 +52,57 @@
 			no-map;
 		};
 	};
+
+	haptic {
+		compatible = "regulator-haptic";
+		haptic-supply = <&mt6323_vibr_reg>;
+		min-microvolt = <1200000>;
+		max-microvolt = <3300000>;
+	};
 };
 
 &uart0 {
 	status = "okay";
+};
+
+&usb {
+	status = "okay";
+};
+
+&u2phy0 {
+	status = "okay";
+};
+
+&pmic {
+	pinctrl-0 = <&pmic_int_pins>;
+	pinctrl-names = "default";
+	interrupts = <16 IRQ_TYPE_LEVEL_HIGH>;
+};
+
+&pwrap {
+	pinctrl-names = "default";
+};
+
+&pio {
+	pmic_int_pins: pmic-int-pins {
+		pins {
+			pinmux = <MT6572_PIN_7_PMIC_EINT__FUNC_PMIC_EINT>;
+			input-enable;
+		};
+	};
+};
+
+&mt6323keys {
+	home {
+		status = "disabled";
+	};
+};
+
+&keyboard {
+	status = "okay";
+	linux,keymap = <MATRIX_KEY(0, 1, KEY_VOLUMEDOWN)
+			MATRIX_KEY(0, 2, KEY_VOLUMEUP)>;
+	keypad,num-rows = <1>;
+	keypad,num-columns = <2>;
+	debounce-delay-ms = <32>;
 };
