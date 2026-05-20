@@ -1211,7 +1211,7 @@ static const struct mtk_pin_desc mtk_pins_mt6572[] = {
     ),
     MTK_PIN(
         129, "GPIO129",
-        MTK_EINT_FUNCTION(NO_EINT_SUPPORT, NO_EINT_SUPPORT),
+        MTK_EINT_FUNCTION(2, 1),
         DRV_GRP2,
         MTK_FUNCTION(0, "GPIO129"),
         MTK_FUNCTION(1, "PWM2"),
