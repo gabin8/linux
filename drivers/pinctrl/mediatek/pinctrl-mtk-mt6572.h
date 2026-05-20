@@ -1177,6 +1177,12 @@ static const struct mtk_pin_desc mtk_pins_mt6572[] = {
         MTK_FUNCTION(1, "CONN_RSTB")
     ),
     MTK_PIN(
+        125, "GPIO125",
+        MTK_EINT_FUNCTION(NO_EINT_SUPPORT, NO_EINT_SUPPORT),
+        DRV_GRP2,
+        MTK_FUNCTION(0, "GPIO125")
+    ),
+    MTK_PIN(
         126, "GPIO126",
         MTK_EINT_FUNCTION(NO_EINT_SUPPORT, NO_EINT_SUPPORT),
         DRV_GRP2,
