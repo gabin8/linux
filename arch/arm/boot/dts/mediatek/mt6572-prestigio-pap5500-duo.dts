@@ -1,0 +1,383 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Prestigio MultiPhone PAP5500 DUO (board codename AW660 / PCB LWDM002 REV.B1).
+ * SoC: MediaTek MT6572 (dual-core Cortex-A7 @ 1.2 GHz).
+ *
+ * Hardware confirmed live on stock Android (Linux 3.4.5) on 2026-05-14:
+ *   - 512 MB LPDDR2 DRAM
+ *   - 4 GB eMMC
+ *   - MicroSD slot (mmc1)
+ *   - LCD: OriseTech OTM8018B 854x480 MIPI DSI video mode  (no mainline driver yet)
+ *   - Touch: Goodix GT9xx @ I2C-1 0x5D
+ *   - Accel: Bosch BMA2xx @ I2C-1 0x18
+ *   - Mag:   AKM AK8963 @ I2C-1 0x0C
+ *   - ALS+prox: Rohm RPR-0521 @ I2C-1 0x39
+ *   - Buttons: power + Vol+/Vol-
+ *   - WiFi/BT combo MT6627
+ *   - PMIC MT6323
+ *   - Battery 2000 mAh Li-Po
+ *
+ * Starting from the JTY D101 DTS which shares the same AW660-class ODM design.
+ * Panel, touch and sensors are intentionally NOT enabled in this first revision:
+ * the goal is to validate the boot pipeline up to USB CDC ACM gadget, then add
+ * peripherals one at a time.
+ */
+
+/dts-v1/;
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+/*
+ * TODO: re-enable when mt6323-auxadc driver + dt-binding header land.
+ * Upstream mt6572-mainline references it but the header isn't merged yet.
+ * #include <dt-bindings/iio/adc/mediatek,mt6323-auxadc.h>
+ */
+#include "mt6572.dtsi"
+#include "mt6323.dtsi"
+
+/ {
+	model = "Prestigio MultiPhone PAP5500 DUO";
+	compatible = "prestigio,pap5500-duo", "mediatek,mt6572";
+
+	aliases {
+		serial0 = &uart0;
+	};
+
+	chosen {
+		stdout-path = "serial0:921600n8";
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x80000000 0x20000000>;
+	};
+
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		/* connsys + modem regions removed 2026-05-16 per upstream maintainer
+		 * feedback ("they're unused anyway") — recovers 21 MB. */
+
+		/* Stock kernel had mtkfb at 0x9F800000-0x9FFFFFFF (8 MB). Reserve the same. */
+		framebuffer_reserved: framebuffer@9f800000 {
+			reg = <0x9f800000 0x800000>;
+			no-map;
+		};
+
+		/* CMA default-pool removed 2026-05-16 per upstream maintainer
+		 * feedback ("not needed"). Frees 64 MB that was held idle. */
+	};
+
+	battery: battery {
+		compatible = "simple-battery";
+		/* PAP5500 service-manual spec: 2000 mAh Li-Po, 3.7 V nominal. */
+		charge-full-design-microamp-hours = <2000000>;
+		voltage-max-design-microvolt = <4200000>;
+		voltage-min-design-microvolt = <3300000>;
+		ocv-capacity-celsius = <25>;
+		ocv-capacity-table-0 = <4189000 100>, <4107000  95>,
+				       <4063000  90>, <4018000  85>,
+				       <3975000  80>, <3937000  75>,
+				       <3907000  70>, <3871000  65>,
+				       <3843000  60>, <3810000  55>,
+				       <3787000  50>, <3781000  45>,
+				       <3777000  40>, <3772000  35>,
+				       <3753000  30>, <3719000  25>,
+				       <3671000  20>, <3596000  15>,
+				       <3536000  10>, <3493000   5>,
+				       <3419000   0>;
+	};
+
+	/*
+	 * TODO: re-enable once the mt6323-auxadc driver + binding header
+	 * are merged upstream. Without an ADC channel for VBAT, the OCV
+	 * table above is data-only — no SOC reading is exposed.
+	 *
+	 * fuel-gauge {
+	 *	compatible = "adc-battery";
+	 *	io-channel-names = "voltage";
+	 *	io-channels = <&mt6323_adc MT6323_AUXADC_BATSNS>;
+	 *	monitored-battery = <&battery>;
+	 * };
+	 */
+
+	haptic {
+		compatible = "regulator-haptic";
+		haptic-supply = <&mt6323_vibr_reg>;
+		min-microvolt = <1200000>;
+		max-microvolt = <3300000>;
+	};
+};
+
+&auxadc {
+	status = "okay";
+};
+
+/*
+ * Display: real DRM_MEDIATEK stack driving the OriseTech OTM8018B panel.
+ * mediatek-drm refuses to bind the DSI controller unless bls is enabled.
+ * Panel timings + SYNC_PULSE mode in panel-orisetech-otm8018b.c are taken
+ * from the stock LK otm8018b_dsi_vdo_lcm_drv_boyi configuration.
+ */
+&bls {
+	status = "okay";
+};
+
+&dsi {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	panel@0 {
+		compatible = "orisetech,otm8018b";
+		reg = <0>;
+		vcc-supply = <&mt6323_vgp1_reg>;
+
+		port {
+			panel_in: endpoint {
+				remote-endpoint = <&dsi_out>;
+			};
+		};
+	};
+
+	port {
+		dsi_out: endpoint {
+			remote-endpoint = <&panel_in>;
+		};
+	};
+};
+
+&cpu0 {
+	proc-supply = <&mt6323_vproc_reg>;
+};
+
+&cpu1 {
+	proc-supply = <&mt6323_vproc_reg>;
+};
+
+&i2c1 {
+	/* I2C-1 hosts touch (0x5D) + sensors. Pinmux GPIO 113/114 alt-1 =
+	 * SCL_1_0/SDA_1_0 — matches stock pinmux state confirmed 2026-05-17
+	 * via /sys/devices/virtual/misc/mtgpio/pin on running stock kernel. */
+	pinctrl-0 = <&i2c1_pins>;
+	pinctrl-names = "default";
+	clock-frequency = <400000>;
+	status = "okay";
+
+	touchscreen@5d {
+		status = "okay";
+		compatible = "goodix,gt911";
+		reg = <0x5d>;
+
+		interrupt-parent = <&pio>;
+		interrupts = <1 IRQ_TYPE_EDGE_RISING>;
+		irq-gpios = <&pio 129 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&pio 57 GPIO_ACTIVE_HIGH>;
+
+		AVDD28-supply = <&mt6323_vgp1_reg>;
+		VDDIO-supply = <&mt6323_vio18_reg>;
+
+		touchscreen-size-x = <480>;
+		touchscreen-size-y = <854>;
+		touchscreen-inverted-x;
+
+		pinctrl-0 = <&tpd_pins>;
+		pinctrl-names = "default";
+	};
+};
+
+/*
+ * Force VGP1/VGP2/VGP3 always-on for I2C device discovery.
+ * Per upstream README, mt6572-mainline lists I2C as "🟡 partial: devices
+ * unresponsive due to regulator issues" — the touch / sensor VDD rails
+ * are gated and no driver requests them yet (we have no goodix / bma /
+ * akm / rpr nodes bound). Without their power, the chips can't ACK.
+ *
+ * Voltages picked from typical ODM schematic defaults for this class of
+ * MT6572 phones; they live inside the chip's published ranges and match
+ * what mainline JTY D101 / Lenovo A369i would need too.
+ *
+ * TODO: once specific touch/sensor nodes exist, drop always-on and let
+ * those drivers request power via *-supply phandles.
+ */
+&mt6323_vgp1_reg {
+	regulator-min-microvolt = <2800000>;
+	regulator-max-microvolt = <2800000>;
+	/* Intentionally NOT regulator-always-on. Stock leaves VGP1 off
+	 * at boot and powers it on at touch driver probe so the chip's
+	 * first VDD ramp happens with driver-controlled INT/RST. With
+	 * always-on, the chip POR's at boot with floating pins and gets
+	 * wedged off its expected I2C address. */
+};
+
+&mt6323_vgp2_reg {
+	regulator-min-microvolt = <1800000>;
+	regulator-max-microvolt = <1800000>;
+	regulator-always-on;
+	regulator-boot-on;
+};
+
+&mt6323_vgp3_reg {
+	regulator-min-microvolt = <1800000>;
+	regulator-max-microvolt = <1800000>;
+	regulator-always-on;
+	regulator-boot-on;
+};
+
+&uart0 {
+	status = "okay";
+};
+
+&usb {
+	status = "okay";
+};
+
+&u2phy0 {
+	status = "okay";
+};
+
+&pmic {
+	pinctrl-0 = <&pmic_int_pins>;
+	pinctrl-names = "default";
+	interrupts = <16 IRQ_TYPE_LEVEL_HIGH>;
+};
+
+&pwrap {
+	assigned-clocks = <&topckgen CLK_TOP_PMIC_SPI_SEL>;
+	assigned-clock-parents = <&uart_clk>;
+};
+
+&mmc0 {
+	pinctrl-0 = <&mmc0_pins>;
+	pinctrl-1 = <&mmc0_pins>;
+	pinctrl-names = "default", "state_uhs";
+	bus-width = <8>;
+	max-frequency = <50000000>;
+	cap-mmc-highspeed;
+	vmmc-supply = <&mt6323_vemc3v3_reg>;
+	vqmmc-supply = <&mt6323_vio18_reg>;
+	non-removable;
+	status = "okay";
+};
+
+&mmc1 {
+	/* MicroSD slot — mtk-msdc.1 at 0x11130000. cd-gpio TBD; using broken-cd until identified. */
+	pinctrl-0 = <&mmc1_pins>;
+	pinctrl-1 = <&mmc1_pins>;
+	pinctrl-names = "default", "state_uhs";
+	bus-width = <4>;
+	max-frequency = <50000000>;
+	cap-sd-highspeed;
+	sd-uhs-sdr12;
+	sd-uhs-sdr25;
+	vmmc-supply = <&mt6323_vmch_reg>;
+	vqmmc-supply = <&mt6323_vmc_reg>;
+	broken-cd;
+	status = "okay";
+};
+
+&mt6323keys {
+	/* Stock keypad input device (mtk-kpd) reports Vol+, Vol-, Power via the PMIC pin EINTs.
+	 * The PMIC home/power button is on PWRKEY; volume keys come through the SoC GPIO matrix
+	 * (see &keyboard below). Disable PMIC home key — we have a separate power button. */
+	home {
+		status = "disabled";
+	};
+};
+
+&keyboard {
+	status = "okay";
+	/* Volume rocker only — power button is handled by &mt6323keys. */
+	linux,keymap = <MATRIX_KEY(0, 0, KEY_VOLUMEUP)
+			MATRIX_KEY(1, 0, KEY_VOLUMEDOWN)>;
+	keypad,num-rows = <2>;
+	keypad,num-columns = <1>;
+	debounce-delay-ms = <32>;
+};
+
+&pio {
+	pmic_int_pins: pmic-int-pins {
+		pins {
+			pinmux = <MT6572_PIN_7_PMIC_EINT__FUNC_PMIC_EINT>;
+			input-enable;
+			bias-pull-down;
+		};
+	};
+
+	pwrap_pins: pwrap-pins {
+		pins {
+			pinmux = <MT6572_PIN_8_PMIC_SPI_CSN__FUNC_PMIC_SPI_CSN>,
+				 <MT6572_PIN_9_PMIC_SPI_SCK__FUNC_PMIC_SPI_SCK>,
+				 <MT6572_PIN_10_PMIC_SPI_MOSI__FUNC_PMIC_SPI_MOSI>,
+				 <MT6572_PIN_11_PMIC_SPI_MISO__FUNC_PMIC_SPI_MISO>;
+		};
+	};
+
+	mmc0_pins: mmc0-pins {
+		pins-clk {
+			pinmux = <MT6572_PIN_44_MC0_CK__FUNC_MC0_CK>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+		};
+
+		pins-cmd-dat {
+			pinmux = <MT6572_PIN_45_MC0_CMD__FUNC_MC0_CMD>,
+				 <MT6572_PIN_46_MC0_DAT0__FUNC_MC0_DAT0>,
+				 <MT6572_PIN_47_MC0_DAT1__FUNC_MC0_DAT1>,
+				 <MT6572_PIN_48_MC0_DAT2__FUNC_MC0_DAT2>,
+				 <MT6572_PIN_49_MC0_DAT3__FUNC_MC0_DAT3>,
+				 <MT6572_PIN_50_MC0_DAT4__FUNC_MC0_DAT4>,
+				 <MT6572_PIN_51_MC0_DAT5__FUNC_MC0_DAT5>,
+				 <MT6572_PIN_52_MC0_DAT6__FUNC_MC0_DAT6>,
+				 <MT6572_PIN_53_MC0_DAT7__FUNC_MC0_DAT7>;
+			input-enable;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+		};
+
+		pins-rst {
+			pinmux = <MT6572_PIN_54_MC0_RSTB__FUNC_MC0_RSTB>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_10>;
+		};
+	};
+
+	tpd_pins: tpd-pins {
+		/* Touch reset on GPIO 57 (alt-0 GPIO) — drive high to release. */
+		pins-rst {
+			pinmux = <MT6572_PIN_57_SD_DAT2__FUNC_GPIO57>;
+			output-high;
+		};
+		pins-int {
+			pinmux = <MT6572_PIN_129_PWM2__FUNC_EINT1>;
+			input-enable;
+			bias-pull-up;
+		};
+	};
+
+	i2c1_pins: i2c1-pins {
+		/* I2C-1: GPIO 113/114 alt-1 = dedicated SCL_1_0 / SDA_1_0,
+		 * matches the pinmux state programmed by stock. */
+		pins {
+			pinmux = <MT6572_PIN_113_SCL_1_0__FUNC_SCL_1_0>,
+				 <MT6572_PIN_114_SDA_1_0__FUNC_SDA_1_0>;
+		};
+	};
+
+	mmc1_pins: mmc1-pins {
+		pins-clk {
+			pinmux = <MT6572_PIN_91_MC1_CK__FUNC_MC1_CK>;
+			bias-pull-down;
+			drive-strength = <8>;
+		};
+
+		pins-cmd-dat {
+			pinmux = <MT6572_PIN_92_MC1_CMD__FUNC_MC1_CMD>,
+				 <MT6572_PIN_93_MC1_DAT0__FUNC_MC1_DAT0>,
+				 <MT6572_PIN_94_MC1_DAT1__FUNC_MC1_DAT1>,
+				 <MT6572_PIN_95_MC1_DAT2__FUNC_MC1_DAT2>,
+				 <MT6572_PIN_96_MC1_DAT3__FUNC_MC1_DAT3>;
+			input-enable;
+			bias-pull-up;
+			drive-strength = <8>;
+		};
+	};
+};
