@@ -1,12 +1,13 @@
 ## Device status
-|                                      | JTY D101                                        | Lenovo A369i    | Energy Phone Colors           |
-|--------------------------------------|-------------------------------------------------|-----------------|-------------------------------|
-| DRM                                  | 🟢 OK, needs panel improvements (power up/down) | 🔴 TBD          | 🟡 partial: needs panel fixes |
-| display brightness                   | 🔴 DEAD                                         | 🔴 DEAD         | 🔴 DEAD                       |
-| vol +/- keys: mediatek,mt6779-keypad | 🟢 OK                                           | 🔴 TBD          | 🔴 TBD                        |
-| power key: mediatek,mt6323-keys      | 🟢 OK                                           | 🔴 TBD          | 🔴 TBD                        |
-| haptics: regulator-haptic            | 🟢 OK                                           | 🔴 TBD          | 🔴 TBD                        |
-| charger                              | 🔴 DEAD                                         | 🔴 DEAD         | 🔴 DEAD                       |
+|                                      | JTY D101                                        | Lenovo A369i    | Energy Phone Colors           | Prestigio PAP5500 DUO                           |
+|--------------------------------------|-------------------------------------------------|-----------------|-------------------------------|-------------------------------------------------|
+| DRM                                  | 🟢 OK, needs panel improvements (power up/down) | 🔴 TBD          | 🟡 partial: needs panel fixes | 🟢 OK, needs panel improvements (power up/down) |
+| display brightness                   | 🔴 DEAD                                         | 🔴 DEAD         | 🔴 DEAD                       | 🔴 DEAD                                         |
+| touchscreen: goodix,gt911            | 🔴 TBD                                          | 🔴 TBD          | 🔴 TBD                        | 🟢 OK                                           |
+| vol +/- keys: mediatek,mt6779-keypad | 🟢 OK                                           | 🔴 TBD          | 🔴 TBD                        | 🔴 TBD                                          |
+| power key: mediatek,mt6323-keys      | 🟢 OK                                           | 🔴 TBD          | 🔴 TBD                        | 🔴 TBD                                          |
+| haptics: regulator-haptic            | 🟢 OK                                           | 🔴 TBD          | 🔴 TBD                        | 🔴 TBD                                          |
+| charger                              | 🔴 DEAD                                         | 🔴 DEAD         | 🔴 DEAD                       | 🔴 DEAD                                         |
 
 ## Platform status
 everything marked with 'needs upstreaming' means it's not existent in the upstream
@@ -43,13 +44,13 @@ all of these need upstreaming
 missing emmc r1r0 pins, needs upstreaming
 
 ### Buses
-| component | driver                   | status     | note                                                        |
-|-----------|--------------------------|------------|-------------------------------------------------------------|
-| UART      | mediatek,mt6577-uart     | 🟢 OK      |                                                             |
-| I2C       | mediatek,mt6572-i2c      | 🟡 partial | needs upstreaming, devices don't respond (regulator issue?) |
-| SPI       |                          | 🔴 DEAD    |                                                             |
-| USB       | mediatek,mtk-musb        | 🟢 OK      |                                                             |
-| USB PHY   | mediatek,generic-tphy-v1 | 🟢 OK      |                                                             |
+| component | driver                   | status  | note              |
+|-----------|--------------------------|---------|-------------------|
+| UART      | mediatek,mt6577-uart     | 🟢 OK   |                   |
+| I2C       | mediatek,mt6572-i2c      | 🟢 OK   | needs upstreaming |
+| SPI       |                          | 🔴 DEAD |                   |
+| USB       | mediatek,mtk-musb        | 🟢 OK   |                   |
+| USB PHY   | mediatek,generic-tphy-v1 | 🟢 OK   |                   |
 
 ### Power
 ### SoC
