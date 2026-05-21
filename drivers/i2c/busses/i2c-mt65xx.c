@@ -390,6 +390,7 @@ static const struct mtk_i2c_compatible mt6572_compat = {
 	.dma_sync = 0,
 	.ltiming_adjust = 0,
 	.apdma_sync = 0,
+	.dma_separate_rx = 1,
 	.max_dma_support = 32,
 };
 
