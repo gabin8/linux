@@ -5,6 +5,7 @@
 
 /dts-v1/;
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/iio/adc/mediatek,mt6323-auxadc.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/leds/common.h>
 #include "mt6572.dtsi"
@@ -84,6 +85,13 @@
 		num-interpolated-steps = <1023>;
 		default-brightness-level = <512>;
 		power-supply = <&mt6323_vsys_reg>;
+	};
+
+	fuel-gauge {
+		compatible = "adc-battery";
+		io-channels = <&mt6323_adc MT6323_AUXADC_BATSNS>;
+		io-channel-names = "voltage";
+		monitored-battery = <&battery>;
 	};
 };
 
