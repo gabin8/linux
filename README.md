@@ -4,9 +4,9 @@
 |--------------------------------------|-------------------------------------------------|-----------------------------|-------------------------------|-------------------------------------------------|
 | DRM                                  | 🟢 OK, needs panel improvements (power up/down) | 🟢 OK, needs sane panel     | 🟡 partial: needs panel fixes | 🟢 OK, needs panel improvements (power up/down) |
 | display brightness                   | 🔴 DEAD                                         | 🔴 DEAD                     | 🔴 DEAD                       | 🔴 DEAD                                         |
-| vol +/- keys: mediatek,mt6779-keypad | 🟢 OK                                           | 🔴 TBD                      | 🔴 TBD                        | 🔴 TBD                                          |
-| power key: mediatek,mt6323-keys      | 🟢 OK                                           | 🟢 OK                       | 🔴 TBD                        | 🔴 TBD                                          |
-| haptics: regulator-haptic            | 🟢 OK                                           | 🔴 TBD                      | 🔴 TBD                        | 🔴 TBD                                          |
+| vol +/- keys: mediatek,mt6779-keypad | 🟢 OK                                           | 🔴 TBD                      | 🔴 TBD                        | 🟢 OK                                           |
+| power key: mediatek,mt6323-keys      | 🟢 OK                                           | 🟢 OK                       | 🔴 TBD                        | 🟢 OK                                           |
+| haptics: regulator-haptic            | 🟢 OK                                           | 🔴 TBD                      | 🔴 TBD                        | 🟢 OK                                           |
 | charger                              | 🔴 DEAD                                         | 🔴 DEAD                     | 🔴 DEAD                       | 🔴 DEAD                                         |
 
 ### Per-device components
