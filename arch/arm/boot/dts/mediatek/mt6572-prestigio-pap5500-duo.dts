@@ -78,7 +78,7 @@
 	status = "okay";
 
 	panel@0 {
-		compatible = "orisetech,otm8018b";
+		compatible = "boyi,otm8018b";
 		reg = <0>;
 		vcc-supply = <&mt6323_vgp1_reg>;
 
@@ -202,17 +202,11 @@
 	status = "okay";
 };
 
-&mt6323keys {
-	home {
-		status = "disabled";
-	};
-};
-
 &keyboard {
 	status = "okay";
-	linux,keymap = <MATRIX_KEY(0, 0, KEY_VOLUMEUP)
-			MATRIX_KEY(1, 0, KEY_VOLUMEDOWN)>;
-	keypad,num-rows = <2>;
+	linux,keymap = <MATRIX_KEY(1, 0, KEY_VOLUMEUP)
+			MATRIX_KEY(9, 0, KEY_VOLUMEDOWN)>;
+	keypad,num-rows = <10>;
 	keypad,num-columns = <1>;
 	debounce-delay-ms = <32>;
 };
