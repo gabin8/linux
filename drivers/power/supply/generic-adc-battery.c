@@ -48,6 +48,7 @@ struct gab {
 	struct delayed_work bat_work;
 	int status;
 	struct gpio_desc *charge_finished;
+	struct power_supply_battery_info *batinfo;
 };
 
 static struct gab *to_generic_bat(struct power_supply *psy)
@@ -115,6 +116,23 @@ static int gab_get_property(struct power_supply *psy,
 		return gab_read_channel(adc_bat, GAB_POWER, &val->intval);
 	case POWER_SUPPLY_PROP_TEMP:
 		return gab_read_channel(adc_bat, GAB_TEMP, &val->intval);
+	case POWER_SUPPLY_PROP_CAPACITY: {
+		int voltage_uv, temp_dc = 250, ret;
+
+		if (!adc_bat->batinfo) {
+			ret = power_supply_get_battery_info(psy, &adc_bat->batinfo);
+			if (ret < 0)
+				return ret;
+		}
+		ret = gab_read_channel(adc_bat, GAB_VOLTAGE, &voltage_uv);
+		if (ret < 0)
+			return ret;
+		if (adc_bat->channel[GAB_TEMP])
+			gab_read_channel(adc_bat, GAB_TEMP, &temp_dc);
+		val->intval = power_supply_batinfo_ocv2cap(adc_bat->batinfo,
+							   voltage_uv, temp_dc);
+		return 0;
+	}
 	default:
 		return -EINVAL;
 	}
@@ -183,7 +201,7 @@ static int gab_probe(struct platform_device *pdev)
 	 */
 	properties = devm_kcalloc(&pdev->dev,
 				  ARRAY_SIZE(gab_props) +
-				  ARRAY_SIZE(gab_chan_name),
+				  ARRAY_SIZE(gab_chan_name) + 1,
 				  sizeof(*properties),
 				  GFP_KERNEL);
 	if (!properties)
@@ -219,6 +237,16 @@ static int gab_probe(struct platform_device *pdev)
 	/* none of the channels are supported so let's bail out */
 	if (!any)
 		return dev_err_probe(&pdev->dev, -ENODEV, "Failed to get any ADC channel\n");
+
+	/*
+	 * If a voltage channel is present and the consumer node references a
+	 * monitored-battery, advertise CAPACITY. The actual battery_info
+	 * (with the OCV table) is fetched lazily on the first capacity read,
+	 * because power_supply_get_battery_info() needs a registered psy.
+	 */
+	if (adc_bat->channel[GAB_VOLTAGE] &&
+	    fwnode_property_present(dev_fwnode(&pdev->dev), "monitored-battery"))
+		properties[index++] = POWER_SUPPLY_PROP_CAPACITY;
 
 	/*
 	 * Total number of properties is equal to static properties
