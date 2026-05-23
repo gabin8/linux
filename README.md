@@ -9,6 +9,7 @@
 | vol +/- keys: mediatek,mt6779-keypad | 🟢 OK                                           | 🔴 TBD                      | 🔴 TBD                        | 🟢 OK                                           |
 | power key: mediatek,mt6323-keys      | 🟢 OK                                           | 🟢 OK                       | 🔴 TBD                        | 🟢 OK                                           |
 | haptics: regulator-haptic            | 🟢 OK                                           | 🔴 TBD                      | 🔴 TBD                        | 🟢 OK                                           |
+| battery: adc-battery + simple-battery OCV | 🔴 TBD                                     | 🔴 TBD                      | 🔴 TBD                        | 🟢 OK: voltage_now, capacity, status            |
 | charger                              | 🔴 DEAD                                         | 🔴 DEAD                     | 🔴 DEAD                       | 🔴 DEAD                                         |
 
 ### Per-device components
@@ -76,7 +77,7 @@ missing emmc r1r0 pins, needs upstreaming
 | efuse      | mediatek,mt6323-efuse     | 🟢 OK     | needs upstreaming                        |
 | thermal    | mediatek,mt6323-thermal   | 🟢 OK     | needs upstreaming, also tested on mt8163 |
 | ADC        | mediatek,mt6323-auxadc    | 🟢 OK     | needs upstreaming, needs cleanup a bit   |
-| fuel gauge |                           | 🔴 DEAD   | needs new driver                         |
+| fuel gauge | adc-battery + simple-battery OCV via mt6323-auxadc BATSNS | 🟢 OK | software-only, no HW fuel-gauge IC on mt6323; voltage_now / capacity (interpolated from OCV table) / status |
 
 ### Storage
 using upstream driver
