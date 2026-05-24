@@ -10,10 +10,12 @@
 | charger                              | 🔴 DEAD                                         | 🔴 DEAD                     | 🔴 DEAD                       | 🔴 DEAD                                         |
 
 ### Per-device components
-|             | JTY D101                           | Lenovo A369i              | Energy Phone Colors           | Prestigio PAP5500 DUO        |
-|-------------|------------------------------------|---------------------------|-------------------------------|------------------------------|
-| touchscreen | 🔴 DEAD                            | 🔴 DEAD                   | 🔴 DEAD                       | 🟢 OK: goodix,gt911          |
-| panel       | 🟡 partial: needs power cycle seqs | 🔴 DEAD: garbage panel IC | 🟡 partial: needs panel fixes | 🟡 partial: garbage panel IC |
+|                 | JTY D101                           | Lenovo A369i              | Energy Phone Colors           | Prestigio PAP5500 DUO              |
+|-----------------|------------------------------------|---------------------------|-------------------------------|------------------------------------|
+| touchscreen     | 🔴 DEAD                            | 🔴 DEAD                   | 🔴 DEAD                       | 🟢 OK: goodix,gt911                |
+| panel           | 🟡 partial: needs power cycle seqs | 🔴 DEAD: garbage panel IC | 🟡 partial: needs panel fixes | 🟡 partial: garbage panel IC       |
+| accelerometer   | 🔴 TBD                             | 🔴 TBD                    | 🔴 TBD                        | 🟢 OK: bosch,bma222e (polling)     |
+| proximity / ALS | 🔴 TBD                             | 🔴 TBD                    | 🔴 TBD                        | 🟢 OK: rohm,rpr0400 (polling)      |
 
 ## Platform status
 everything marked with 'needs upstreaming' means it's not existent in the upstream
