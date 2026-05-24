@@ -130,6 +130,13 @@
 		pinctrl-0 = <&tpd_pins>;
 		pinctrl-names = "default";
 	};
+
+	light-sensor@39 {
+		compatible = "rohm,rpr0400";
+		reg = <0x39>;
+		vdd-supply = <&mt6323_vgp1_reg>;
+		vddio-supply = <&mt6323_vio18_reg>;
+	};
 };
 
 &mt6323_vgp1_reg {
