@@ -461,6 +461,19 @@
 			status = "disabled";
 		};
 
+		pwm: pwm@11008000 {
+			compatible = "mediatek,mt7623-pwm";
+			reg = <0x11008000 0x1000>;
+			#pwm-cells = <2>;
+			clocks = <&topckgen CLK_TOP_PWM>, <&topckgen CLK_TOP_PWM>,
+				 <&topckgen CLK_TOP_PWM>, <&topckgen CLK_TOP_PWM>,
+				 <&topckgen CLK_TOP_PWM>, <&topckgen CLK_TOP_PWM>,
+				 <&topckgen CLK_TOP_PWM>;
+			clock-names = "top", "main",
+				      "pwm1", "pwm2", "pwm3", "pwm4", "pwm5";
+			status = "disabled";
+		};
+
 		usb: usb@11100000 {
 			compatible = "mediatek,mt2701-musb",
 				     "mediatek,mtk-musb";
