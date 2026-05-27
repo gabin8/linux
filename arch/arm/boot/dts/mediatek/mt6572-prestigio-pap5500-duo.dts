@@ -62,6 +62,13 @@
 		min-microvolt = <1200000>;
 		max-microvolt = <3300000>;
 	};
+
+	backlight: backlight {
+		compatible = "pwm-backlight";
+		pwms = <&pwm 1 31250>;
+		default-brightness-level = <128>;
+		power-supply = <&mt6323_vsys_reg>;
+	};
 };
 
 &auxadc {
@@ -81,6 +88,7 @@
 		compatible = "boyi,otm8018b";
 		reg = <0>;
 		vcc-supply = <&mt6323_vgp1_reg>;
+		backlight = <&backlight>;
 
 		port {
 			panel_in: endpoint {
@@ -177,6 +185,12 @@
 	regulator-boot-on;
 };
 
+&pwm {
+	pinctrl-0 = <&bl_pwm_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
 &uart0 {
 	status = "okay";
 };
@@ -238,6 +252,12 @@
 };
 
 &pio {
+	bl_pwm_pins: bl-pwm-pins {
+		pins {
+			pinmux = <MT6572_PIN_30_LPD16__FUNC_PWM2>;
+		};
+	};
+
 	pmic_int_pins: pmic-int-pins {
 		pins {
 			pinmux = <MT6572_PIN_7_PMIC_EINT__FUNC_PMIC_EINT>;
