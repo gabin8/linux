@@ -3,7 +3,7 @@
 |                                      | JTY D101                                        | Lenovo A369i                | Energy Phone Colors           | Prestigio PAP5500 DUO                           |
 |--------------------------------------|-------------------------------------------------|-----------------------------|-------------------------------|-------------------------------------------------|
 | DRM                                  | 🟢 OK, needs panel improvements (power up/down) | 🟢 OK, needs sane panel     | 🟡 partial: needs panel fixes | 🟢 OK, needs panel improvements (power up/down) |
-| display brightness                   | 🔴 DEAD                                         | 🔴 DEAD                     | 🔴 DEAD                       | 🔴 DEAD                                         |
+| display brightness                   | 🔴 DEAD                                         | 🔴 DEAD                     | 🔴 DEAD                       | 🟢 OK: pwm-backlight on mt6572 PWM2             |
 | vol +/- keys: mediatek,mt6779-keypad | 🟢 OK                                           | 🔴 TBD                      | 🔴 TBD                        | 🟢 OK                                           |
 | power key: mediatek,mt6323-keys      | 🟢 OK                                           | 🟢 OK                       | 🔴 TBD                        | 🟢 OK                                           |
 | haptics: regulator-haptic            | 🟢 OK                                           | 🔴 TBD                      | 🔴 TBD                        | 🟢 OK                                           |
