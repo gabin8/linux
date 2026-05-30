@@ -1,0 +1,594 @@
+// SPDX-License-Identifier: GPL-2.0
+//
+// MediaTek MT6572 AFE platform driver (AFE + on-die MT6323 PMIC analog codec).
+//
+// Hand-rolled ASoC component for the mt6572 Audio Front-End: a DL1 playback
+// front-end DAI feeding the ADDA downlink SRC and, over the PMIC-wrapper
+// regmap, the mt6323 PMIC analog codec (DAC + headphone/speaker).
+//
+// The AFE register window is the parent audsys syscon at phys 0x11140000, but
+// we map it with our OWN fast_io (spinlock) regmap so the playback trigger and
+// the period interrupt run in atomic context -- exactly like the MediaTek BSP
+// and mainline AFE drivers. The slow PMIC (pwrap, mutex) is programmed once at
+// probe, NOT in the hot path, so it cannot force the PCM nonatomic.
+
+#include <linux/bitfield.h>
+#include <linux/clk.h>
+#include <linux/dma-mapping.h>
+#include <linux/err.h>
+#include <linux/interrupt.h>
+#include <linux/io.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/of_platform.h>
+#include <linux/platform_device.h>
+#include <linux/regmap.h>
+
+#include <sound/pcm.h>
+#include <sound/pcm_params.h>
+#include <sound/soc.h>
+
+/*
+ * AFE register offsets (classic mt65xx AFE layout). The mt6572 AFE window is at
+ * phys 0x11140000; the base comes from the parent audsys syscon node's reg.
+ */
+#define AUDIO_TOP_CON0		0x0000
+#define AUDIO_TOP_CON0_AFE_ON	0x60004000	/* AFE power-on (stock value) */
+
+#define AFE_DAC_CON0		0x0010
+#define AFE_DAC_CON0_AFE_ON	BIT(0)		/* global AFE enable */
+#define AFE_DAC_CON0_DL1_ON	BIT(1)		/* DL1 memif enable */
+#define AFE_DAC_CON0_DL1_OUT	BIT(10)		/* DL1 data -> downstream gate */
+#define AFE_DAC_CON1		0x0014
+#define AFE_DAC_CON1_DL1_RATE	GENMASK(3, 0)	/* DL1 sample-rate code */
+#define AFE_DL1_BASE		0x0040		/* DL1 memif DMA: ring start */
+#define AFE_DL1_CUR		0x0044		/* DL1 memif DMA: current read pointer */
+#define AFE_DL1_END		0x0048		/* DL1 memif DMA: ring end (inclusive) */
+/* Per-memif max burst length; DL1 = bits [3:0]. 0 for an SRAM buffer. */
+#define AFE_MEMIF_MAXLEN	0x03d4
+#define AFE_MEMIF_MAXLEN_DL1	GENMASK(3, 0)
+/* Per-memif fetch word-length. DL1 = [17:16]; 0 = 16-bit. */
+#define AFE_MEMIF_PBUF_SIZE	0x03d8
+#define AFE_MEMIF_PBUF_SIZE_DL1	GENMASK(17, 16)
+
+#define AFE_IRQ_MCU_CON		0x03a0
+#define AFE_IRQ_MCU_CON_IRQ1_ON		BIT(0)		/* IRQ1 enable */
+#define AFE_IRQ_MCU_CON_IRQ1_RATE	GENMASK(7, 4)	/* IRQ1 sample-rate code */
+#define AFE_IRQ_MCU_STATUS	0x03a4
+#define AFE_IRQ_MCU_STATUS_IRQ1	BIT(0)		/* IRQ1 pending */
+#define AFE_IRQ_MCU_STATUS_MASK	GENMASK(3, 0)	/* IRQ1..4 */
+#define AFE_IRQ_MCU_CLR		0x03a8
+/* Stock clears these when STATUS reads 0 (line fired, no status bit). */
+#define AFE_IRQ_MCU_CLR_NOSTATUS (BIT(6) | BIT(1) | BIT(0))
+#define AFE_IRQ_MCU_CNT1	0x03ac		/* IRQ1 down-count = period (frames) */
+
+/*
+ * Output path: DL1 -> interconnect -> ADDA downlink SRC -> AFE<->PMIC link.
+ * Values captured from stock /proc/audio during a live playback.
+ */
+#define AFE_I2S_CON1		0x0034
+#define AFE_I2S_CON1_BASE	0x00000008	/* I2S DAC format (enable is a separate edge) */
+#define AFE_I2S_CON1_RATE	GENMASK(11, 8)	/* rate field = AFE DAC_CON1 code */
+#define AFE_I2S_CON1_ON		BIT(0)		/* I2S enable */
+#define AFE_CONN1		0x0024
+#define AFE_CONN1_DL1_O3	BIT(21)		/* DL1 ch1 -> O3 */
+#define AFE_CONN2		0x0028
+#define AFE_CONN2_DL1_O4	BIT(6)		/* DL1 ch2 -> O4 */
+#define AFE_ADDA_DL_SRC2_CON0	0x0108
+#define AFE_ADDA_DL_SRC2_CON0_BASE 0x03001802	/* config with SRC disabled (bit0=0) */
+#define AFE_ADDA_DL_SRC2_CON0_RATE GENMASK(31, 28) /* DL input mode = ADDA rate code */
+#define AFE_ADDA_DL_SRC2_CON0_ON   BIT(0)	/* SRC enable (a separate write edge) */
+#define AFE_ADDA_DL_SRC2_CON1	0x010c
+#define AFE_ADDA_DL_SRC2_CON1_VAL 0xf74f0000
+#define AFE_ADDA_UL_DL_CON0	0x0124
+#define AFE_ADDA_UL_DL_CON0_ON	BIT(0)		/* ADDA block on */
+/* ADDA downlink pre-distortion; stock zeroes both for plain DL1 playback. */
+#define AFE_ADDA_PREDIS_CON0	0x0260
+#define AFE_ADDA_PREDIS_CON1	0x0264
+/* SoC side of the AFE<->PMIC serial audio interface ("NEWIF"). Power-on config. */
+#define AFE_ADDA_NEWIF_CFG0	0x0138
+#define AFE_ADDA_NEWIF_CFG0_VAL	0x03f87200
+#define AFE_ADDA_NEWIF_CFG1	0x013c
+#define AFE_ADDA_NEWIF_CFG1_VAL	0x03117180
+
+/*
+ * Analog codec in the mt6323 PMIC, reached over the PMIC-wrapper (pwrap) regmap
+ * (16-bit). ABB_AFE = the PMIC digital-audio bridge (base 0x4000); AUDTOP = the
+ * analog DAC/headphone block (base 0x700). Programmed once at probe.
+ */
+#define ABB_AFE_CON(n)		(0x4000 + (n) * 2)
+#define AUDTOP_CON(n)		(0x0700 + (n) * 2)
+#define ABB_AFE_UP8X_FIFO_CFG0	0x401e
+#define ABB_AFE_PMIC_NEWIF_CFG0	0x4024
+#define ABB_AFE_PMIC_NEWIF_CFG1	0x4026
+#define ABB_AFE_PMIC_NEWIF_CFG2	0x4028
+#define ABB_AFE_PMIC_NEWIF_CFG3	0x402a
+
+/* PMIC audio clocks (mt6323 TOP_CKPDN). Atomic SET/CLR aliases. */
+#define MT6323_TOP_CKPDN0_SET	0x0104
+#define MT6323_TOP_CKPDN0_CLR	0x0106
+#define PMIC_RG_CLKSQ_EN_AUD	BIT(0)
+#define MT6323_TOP_CKPDN1_SET	0x010a
+#define MT6323_TOP_CKPDN1_CLR	0x010c
+#define PMIC_RG_AUD_26M_PDN	BIT(8)
+#define MT6323_TOP_CKCON1_SET	0x0128
+#define PMIC_CKCON1_AUD_BITS	GENMASK(13, 12)
+
+/* Always-on analog + NEWIF-PMIC baseline (present even at stock idle). */
+static const struct reg_sequence mt6572_afe_pmic_init[] = {
+	{ MT6323_TOP_CKCON1_SET, PMIC_CKCON1_AUD_BITS },
+	{ ABB_AFE_CON(1),  0x0009 },
+	{ ABB_AFE_CON(3),  0x0221 },
+	{ ABB_AFE_CON(4),  0x0255 },
+	{ ABB_AFE_CON(5),  0x0028 },
+	{ ABB_AFE_CON(6),  0x0218 },
+	{ ABB_AFE_CON(7),  0x0204 },
+	{ ABB_AFE_CON(10), 0x0001 },
+	{ AUDTOP_CON(0),   0x6010 },
+	{ AUDTOP_CON(1),   0x0140 },
+	{ AUDTOP_CON(2),   0x00c0 },
+	{ AUDTOP_CON(3),   0x0200 },
+	{ AUDTOP_CON(5),   0x0014 },
+	{ AUDTOP_CON(6),   0x37e2 },
+	{ AUDTOP_CON(8),   0x0200 },
+	{ AUDTOP_CON(9),   0x0008 },
+	{ ABB_AFE_UP8X_FIFO_CFG0,  0x0001 },
+	{ ABB_AFE_PMIC_NEWIF_CFG0, 0x7330 },
+	{ ABB_AFE_PMIC_NEWIF_CFG1, 0x0018 },
+	{ ABB_AFE_PMIC_NEWIF_CFG2, 0x302f },
+	{ ABB_AFE_PMIC_NEWIF_CFG3, 0xf872 },
+};
+
+/*
+ * Analog DAC + headphone path on (stock SET_HEADPHONE_ON/SPEAKER_ON), then the
+ * digital bridge. Done once at probe so the slow pwrap regmap is never touched
+ * from the atomic trigger; the DAC simply idles when no DL1 data flows.
+ */
+static const struct reg_sequence mt6572_afe_pmic_on[] = {
+	{ AUDTOP_CON(5),   0x7714 },	/* DAC bias / config */
+	{ AUDTOP_CON(6),   0xf5ba },	/* HP driver + depop */
+	{ AUDTOP_CON(0),   0x7010 },	/* DAC enable */
+	{ AUDTOP_CON(4),   0x007c },	/* HP / speaker enable */
+	{ ABB_AFE_CON(0),  0x0001 },	/* digital-audio bridge on */
+	{ ABB_AFE_CON(11), 0x0303 },	/* NEWIF DL enable */
+};
+
+/* AFE register regmap: own MMIO mapping with fast_io (spinlock) so the trigger
+ * and the hardirq can touch it in atomic context. */
+static const struct regmap_config mt6572_afe_regmap_config = {
+	.reg_bits = 32,
+	.reg_stride = 4,
+	.val_bits = 32,
+	.fast_io = true,
+	.max_register = 0x0ffc,
+};
+
+struct mt6572_afe {
+	struct device *dev;
+	struct regmap *regmap;		/* AFE registers (own MMIO, fast_io) */
+	struct regmap *pmic;		/* mt6323 PMIC analog codec (via pwrap) */
+	struct clk *clk;
+	/* DL1 stream that owns the AFE IRQ while running (set in trigger). */
+	struct snd_pcm_substream *dl1_substream;
+};
+
+/* mt65xx Hz -> AFE sample-rate code (AFE_DAC_CON1 / AFE_IRQ_MCU_CON rate field). */
+static int mt6572_afe_rate_code(unsigned int rate)
+{
+	switch (rate) {
+	case 8000:	return 0;
+	case 11025:	return 1;
+	case 12000:	return 2;
+	case 16000:	return 4;
+	case 22050:	return 5;
+	case 24000:	return 6;
+	case 32000:	return 8;
+	case 44100:	return 9;
+	case 48000:	return 10;
+	default:	return -EINVAL;
+	}
+}
+
+/* ADDA downlink SRC input-mode code (ADDA_DL_SRC2_CON0[31:28]). */
+static int mt6572_afe_adda_rate_code(unsigned int rate)
+{
+	switch (rate) {
+	case 8000:	return 0;
+	case 11025:	return 1;
+	case 12000:	return 2;
+	case 16000:	return 3;
+	case 22050:	return 4;
+	case 24000:	return 5;
+	case 32000:	return 6;
+	case 44100:	return 7;
+	case 48000:	return 8;
+	default:	return -EINVAL;
+	}
+}
+
+static struct snd_soc_dai_driver mt6572_afe_dais[] = {
+	{
+		.name = "mt6572-afe-dl1",
+		.playback = {
+			.stream_name = "DL1 Playback",
+			.channels_min = 1,
+			.channels_max = 2,
+			.rates = SNDRV_PCM_RATE_8000_48000,
+			.formats = SNDRV_PCM_FMTBIT_S16_LE,
+		},
+	},
+};
+
+static const struct snd_pcm_hardware mt6572_afe_hardware = {
+	/* No MMAP: the DL1 buffer is on-chip SRAM (SNDRV_DMA_TYPE_DEV_IRAM), not a
+	 * coherently-mmappable DRAM region like the mainline AFE drivers use. With
+	 * MMAP_VALID, tinyalsa synced appl_ptr via the control page and read back 0,
+	 * clobbering the WRITEI-advanced value -> instant underrun. Plain RW keeps
+	 * appl_ptr kernel-tracked. */
+	.info = SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_BLOCK_TRANSFER,
+	.formats = SNDRV_PCM_FMTBIT_S16_LE,
+	.rates = SNDRV_PCM_RATE_8000_48000,
+	.rate_min = 8000,
+	.rate_max = 48000,
+	.channels_min = 1,
+	.channels_max = 2,
+	/* Flexible period/buffer (like the mainline + vendor AFE drivers) so the
+	 * app's own config is honored and ALSA's stop_threshold == buffer_size.
+	 * Forcing a rigid 2x8KiB made tinyalsa set stop_threshold=2048 = HALF the
+	 * 4096-frame buffer, so the stream "underran" at half-full and tore down
+	 * before the period IRQ could establish. Capped at the 16 KiB AFE SRAM. */
+	.period_bytes_min = 1024,
+	.period_bytes_max = 8192,
+	.periods_min = 2,
+	.periods_max = 16,
+	.buffer_bytes_max = 16 * 1024,
+};
+
+static int mt6572_afe_pcm_open(struct snd_soc_component *comp,
+			       struct snd_pcm_substream *substream)
+{
+	snd_soc_set_runtime_hwparams(substream, &mt6572_afe_hardware);
+	return 0;
+}
+
+static int mt6572_afe_pcm_hw_params(struct snd_soc_component *comp,
+				    struct snd_pcm_substream *substream,
+				    struct snd_pcm_hw_params *params)
+{
+	struct mt6572_afe *afe = snd_soc_card_get_drvdata(comp->card);
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	unsigned int bytes = params_buffer_bytes(params);
+	u32 base = lower_32_bits(runtime->dma_addr);
+
+	/* Program the DL1 memif DMA ring (in the AFE on-chip SRAM). */
+	regmap_write(afe->regmap, AFE_DL1_BASE, base);
+	regmap_write(afe->regmap, AFE_DL1_END, base + bytes - 1);
+	regmap_update_bits(afe->regmap, AFE_MEMIF_MAXLEN, AFE_MEMIF_MAXLEN_DL1, 0);
+	regmap_update_bits(afe->regmap, AFE_MEMIF_PBUF_SIZE, AFE_MEMIF_PBUF_SIZE_DL1, 0);
+	return 0;
+}
+
+/*
+ * Process-context setup, run right before the atomic trigger. Does everything
+ * slow or order-sensitive: the AFE path, AFE_ON, then the PMIC analog -- in
+ * stock order (analog AFTER AFE_ON), and sequenced close to playback (not at
+ * probe). The PMIC mutex regmap is fine here (prepare can sleep); the trigger
+ * then only flips DL1_ON + the period IRQ.
+ */
+static int mt6572_afe_pcm_prepare(struct snd_soc_component *comp,
+				  struct snd_pcm_substream *substream)
+{
+	struct mt6572_afe *afe = snd_soc_card_get_drvdata(comp->card);
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	int adda_code = mt6572_afe_adda_rate_code(runtime->rate);
+	int rate_code = mt6572_afe_rate_code(runtime->rate);
+
+	if (adda_code < 0 || rate_code < 0)
+		return -EINVAL;
+
+	/* PMIC audio clocks first. */
+	if (afe->pmic) {
+		regmap_write(afe->pmic, MT6323_TOP_CKPDN0_SET, PMIC_RG_CLKSQ_EN_AUD);
+		regmap_write(afe->pmic, MT6323_TOP_CKPDN1_CLR, PMIC_RG_AUD_26M_PDN);
+	}
+
+	/* IRQ1 rate + per-period frame count (enable is in the trigger). */
+	regmap_update_bits(afe->regmap, AFE_IRQ_MCU_CON, AFE_IRQ_MCU_CON_IRQ1_RATE,
+			   FIELD_PREP(AFE_IRQ_MCU_CON_IRQ1_RATE, rate_code));
+	regmap_write(afe->regmap, AFE_IRQ_MCU_CNT1, runtime->period_size);
+
+	/* Interconnect: DL1 ch1/ch2 -> O3/O4. */
+	regmap_update_bits(afe->regmap, AFE_CONN1, AFE_CONN1_DL1_O3, AFE_CONN1_DL1_O3);
+	regmap_update_bits(afe->regmap, AFE_CONN2, AFE_CONN2_DL1_O4, AFE_CONN2_DL1_O4);
+
+	regmap_update_bits(afe->regmap, AFE_DAC_CON0, AFE_DAC_CON0_DL1_OUT,
+			   AFE_DAC_CON0_DL1_OUT);
+	regmap_write(afe->regmap, AFE_ADDA_PREDIS_CON0, 0);
+	regmap_write(afe->regmap, AFE_ADDA_PREDIS_CON1, 0);
+
+	/* ADDA downlink SRC + I2S, in stock's interleaving. */
+	regmap_write(afe->regmap, AFE_ADDA_DL_SRC2_CON0,
+		     AFE_ADDA_DL_SRC2_CON0_BASE |
+		     FIELD_PREP(AFE_ADDA_DL_SRC2_CON0_RATE, adda_code) |
+		     AFE_ADDA_DL_SRC2_CON0_ON);
+	regmap_write(afe->regmap, AFE_ADDA_DL_SRC2_CON1, AFE_ADDA_DL_SRC2_CON1_VAL);
+	regmap_write(afe->regmap, AFE_I2S_CON1,
+		     AFE_I2S_CON1_BASE | FIELD_PREP(AFE_I2S_CON1_RATE, rate_code));
+	regmap_write(afe->regmap, AFE_ADDA_DL_SRC2_CON0,
+		     AFE_ADDA_DL_SRC2_CON0_BASE |
+		     FIELD_PREP(AFE_ADDA_DL_SRC2_CON0_RATE, adda_code) |
+		     AFE_ADDA_DL_SRC2_CON0_ON);
+	regmap_update_bits(afe->regmap, AFE_I2S_CON1, AFE_I2S_CON1_ON, AFE_I2S_CON1_ON);
+	regmap_write(afe->regmap, AFE_ADDA_DL_SRC2_CON0,
+		     AFE_ADDA_DL_SRC2_CON0_BASE |
+		     FIELD_PREP(AFE_ADDA_DL_SRC2_CON0_RATE, adda_code) |
+		     AFE_ADDA_DL_SRC2_CON0_ON);
+	regmap_update_bits(afe->regmap, AFE_ADDA_UL_DL_CON0, AFE_ADDA_UL_DL_CON0_ON,
+			   AFE_ADDA_UL_DL_CON0_ON);
+
+	/* Global AFE on, then the DL1 memif sample rate. */
+	regmap_update_bits(afe->regmap, AFE_DAC_CON0, AFE_DAC_CON0_AFE_ON,
+			   AFE_DAC_CON0_AFE_ON);
+	regmap_update_bits(afe->regmap, AFE_DAC_CON1, AFE_DAC_CON1_DL1_RATE,
+			   FIELD_PREP(AFE_DAC_CON1_DL1_RATE, rate_code));
+
+	/* Analog DAC + headphone on, AFTER AFE_ON (stock order). */
+	if (afe->pmic)
+		regmap_multi_reg_write(afe->pmic, mt6572_afe_pmic_on,
+				       ARRAY_SIZE(mt6572_afe_pmic_on));
+
+	return 0;
+}
+
+static int mt6572_afe_pcm_trigger(struct snd_soc_component *comp,
+				  struct snd_pcm_substream *substream, int cmd)
+{
+	struct mt6572_afe *afe = snd_soc_card_get_drvdata(comp->card);
+
+	switch (cmd) {
+	case SNDRV_PCM_TRIGGER_START:
+	case SNDRV_PCM_TRIGGER_RESUME:
+	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+		afe->dl1_substream = substream;
+		/* Atomic: only the memif start + period IRQ (fast_io regmap).
+		 * snd_pcm_period_elapsed is driven by the hardware AFE IRQ alone,
+		 * like the mainline MediaTek AFE drivers (no software period clock). */
+		regmap_update_bits(afe->regmap, AFE_IRQ_MCU_CON,
+				   AFE_IRQ_MCU_CON_IRQ1_ON, AFE_IRQ_MCU_CON_IRQ1_ON);
+		regmap_update_bits(afe->regmap, AFE_DAC_CON0, AFE_DAC_CON0_DL1_ON,
+				   AFE_DAC_CON0_DL1_ON);
+		return 0;
+	case SNDRV_PCM_TRIGGER_STOP:
+	case SNDRV_PCM_TRIGGER_SUSPEND:
+	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+		/*
+		 * Minimal stop, like the mainline AFE FE trigger: disable only the
+		 * DL1 memif and its period IRQ. Leave the downstream (DL1_OUT, AFE_ON,
+		 * ADDA SRC/I2S, interconnect) and the PMIC analog powered -- .prepare
+		 * re-asserts them idempotently for the next stream. An abrupt full-path
+		 * teardown gates the DAC input to zero in one step (a click on stop);
+		 * stopping only the memif lets the ADDA SRC ring the tail down to
+		 * silence gently instead. (Analog/path power-down with a proper depop
+		 * is a separate follow-up.)
+		 */
+		regmap_update_bits(afe->regmap, AFE_IRQ_MCU_CON,
+				   AFE_IRQ_MCU_CON_IRQ1_ON, 0);
+		regmap_update_bits(afe->regmap, AFE_DAC_CON0, AFE_DAC_CON0_DL1_ON, 0);
+		afe->dl1_substream = NULL;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static snd_pcm_uframes_t mt6572_afe_pcm_pointer(struct snd_soc_component *comp,
+						struct snd_pcm_substream *substream)
+{
+	struct mt6572_afe *afe = snd_soc_card_get_drvdata(comp->card);
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	u32 base = lower_32_bits(runtime->dma_addr);
+	unsigned int cur = 0;
+
+	/* Raw CUR - BASE, as the mainline mtk_afe_pcm_pointer. */
+	regmap_read(afe->regmap, AFE_DL1_CUR, &cur);
+	if (cur < base || cur >= base + runtime->dma_bytes)
+		return 0;
+	return bytes_to_frames(runtime, cur - base);
+}
+
+static int mt6572_afe_pcm_construct(struct snd_soc_component *comp,
+				    struct snd_soc_pcm_runtime *rtd)
+{
+	size_t size = mt6572_afe_hardware.buffer_bytes_max;
+
+	/* DL1 memif fetches from the AFE on-chip SRAM (16 KiB). No MMAP: userspace
+	 * writes via the RW path and the kernel copies into the SRAM ring. */
+	snd_pcm_set_managed_buffer_all(rtd->pcm, SNDRV_DMA_TYPE_DEV_IRAM, comp->dev,
+				       size, size);
+	return 0;
+}
+
+static const struct snd_soc_component_driver mt6572_afe_component = {
+	.name = "mt6572-afe-pcm",
+	.open = mt6572_afe_pcm_open,
+	.hw_params = mt6572_afe_pcm_hw_params,
+	.prepare = mt6572_afe_pcm_prepare,
+	.trigger = mt6572_afe_pcm_trigger,
+	.pointer = mt6572_afe_pcm_pointer,
+	.pcm_construct = mt6572_afe_pcm_construct,
+};
+
+/*
+ * AFE MCU interrupt. IRQ1 marks a DL1 period boundary. A plain hardirq: the AFE
+ * regmap is fast_io (MMIO spinlock) so status read/clear are atomic-safe, and
+ * the PCM is atomic so snd_pcm_period_elapsed runs here directly -- like the
+ * stock and mainline MediaTek AFE drivers. Active-low (DTS: IRQ_TYPE_LEVEL_LOW).
+ */
+static irqreturn_t mt6572_afe_irq(int irq, void *dev_id)
+{
+	struct mt6572_afe *afe = dev_id;
+	unsigned int status;
+
+	regmap_read(afe->regmap, AFE_IRQ_MCU_STATUS, &status);
+	status &= AFE_IRQ_MCU_STATUS_MASK;
+	if (!status) {
+		/* Line fired with no status bit: ack the common/IRQ1/IRQ2 sources. */
+		regmap_write(afe->regmap, AFE_IRQ_MCU_CLR, AFE_IRQ_MCU_CLR_NOSTATUS);
+		return IRQ_HANDLED;
+	}
+
+	if ((status & AFE_IRQ_MCU_STATUS_IRQ1) && afe->dl1_substream)
+		snd_pcm_period_elapsed(afe->dl1_substream);
+
+	/* Acknowledge the sources we saw so the (active-low) line deasserts. */
+	regmap_write(afe->regmap, AFE_IRQ_MCU_CLR, status);
+	return IRQ_HANDLED;
+}
+
+/* Minimal card: the AFE front-end DAI -> dummy codec; the real DAC is the PMIC
+ * analog block, brought up once at probe. */
+static struct snd_soc_dai_link_component mt6572_afe_cpu = {
+	.dai_name = "mt6572-afe-dl1",
+};
+static struct snd_soc_dai_link_component mt6572_afe_platform;
+
+static struct snd_soc_dai_link mt6572_afe_dai_links[] = {
+	{
+		.name = "DL1",
+		.stream_name = "DL1 Playback",
+		.cpus = &mt6572_afe_cpu,
+		.num_cpus = 1,
+		.codecs = &snd_soc_dummy_dlc,
+		.num_codecs = 1,
+		.platforms = &mt6572_afe_platform,
+		.num_platforms = 1,
+	},
+};
+
+static struct snd_soc_card mt6572_afe_card = {
+	.name = "mt6572-mt6323",
+	.owner = THIS_MODULE,
+	.dai_link = mt6572_afe_dai_links,
+	.num_links = ARRAY_SIZE(mt6572_afe_dai_links),
+};
+
+static int mt6572_afe_pcm_dev_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct mt6572_afe *afe;
+	struct device_node *pwrap_np;
+	struct resource res;
+	void __iomem *base;
+	int ret, irq;
+
+	afe = devm_kzalloc(dev, sizeof(*afe), GFP_KERNEL);
+	if (!afe)
+		return -ENOMEM;
+	afe->dev = dev;
+	platform_set_drvdata(pdev, afe);
+
+	ret = dma_coerce_mask_and_coherent(dev, DMA_BIT_MASK(32));
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to set DMA mask\n");
+
+	/* AFE master gate (CLK_TOP_AUDIO). */
+	afe->clk = devm_clk_get_enabled(dev, "audio");
+	if (IS_ERR(afe->clk))
+		return dev_err_probe(dev, PTR_ERR(afe->clk),
+				     "failed to get/enable the audio clock\n");
+
+	/*
+	 * The AFE registers live in the parent audsys syscon window; map them
+	 * with our own fast_io regmap so the trigger and IRQ stay atomic.
+	 */
+	ret = of_address_to_resource(dev->parent->of_node, 0, &res);
+	if (ret)
+		return dev_err_probe(dev, ret, "no AFE reg in parent syscon\n");
+	base = devm_ioremap(dev, res.start, resource_size(&res));
+	if (!base)
+		return dev_err_probe(dev, -ENOMEM, "failed to map AFE registers\n");
+	afe->regmap = devm_regmap_init_mmio(dev, base, &mt6572_afe_regmap_config);
+	if (IS_ERR(afe->regmap))
+		return dev_err_probe(dev, PTR_ERR(afe->regmap),
+				     "failed to init AFE regmap\n");
+
+	/*
+	 * The analog codec lives in the mt6323 PMIC (pwrap regmap, mutex). Bring
+	 * it fully up here, at probe -- never in the atomic hot path. Defer until
+	 * the wrapper has probed.
+	 */
+	pwrap_np = of_parse_phandle(dev->of_node, "mediatek,pwrap", 0);
+	if (pwrap_np) {
+		struct platform_device *pwrap_pdev = of_find_device_by_node(pwrap_np);
+
+		of_node_put(pwrap_np);
+		if (!pwrap_pdev)
+			return -EPROBE_DEFER;
+		afe->pmic = dev_get_regmap(&pwrap_pdev->dev, NULL);
+		put_device(&pwrap_pdev->dev);
+		if (!afe->pmic)
+			return -EPROBE_DEFER;
+
+		ret = regmap_multi_reg_write(afe->pmic, mt6572_afe_pmic_init,
+					     ARRAY_SIZE(mt6572_afe_pmic_init));
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to init PMIC codec\n");
+		/* The analog DAC + audio clocks are brought up per-stream in
+		 * .prepare (process context), sequenced with the AFE. */
+	} else {
+		dev_warn(dev, "no mediatek,pwrap phandle: analog codec disabled\n");
+	}
+
+	/* Power on the AFE top + the SoC side of the AFE<->PMIC interface. */
+	regmap_write(afe->regmap, AUDIO_TOP_CON0, AUDIO_TOP_CON0_AFE_ON);
+	regmap_write(afe->regmap, AFE_ADDA_NEWIF_CFG0, AFE_ADDA_NEWIF_CFG0_VAL);
+	regmap_write(afe->regmap, AFE_ADDA_NEWIF_CFG1, AFE_ADDA_NEWIF_CFG1_VAL);
+
+	/* Mask all AFE IRQs and clear stale status before hooking the GIC. */
+	regmap_write(afe->regmap, AFE_IRQ_MCU_CON, 0);
+	regmap_write(afe->regmap, AFE_IRQ_MCU_CLR, AFE_IRQ_MCU_STATUS_MASK);
+
+	/* AFE MCU interrupt (hwirq 96 / GIC SPI 64) for DL1 periods -- hardirq. */
+	irq = platform_get_irq(pdev, 0);
+	if (irq < 0)
+		return irq;
+	ret = devm_request_irq(dev, irq, mt6572_afe_irq, 0, "mt6572-afe", afe);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to request AFE irq %d\n", irq);
+
+	ret = devm_snd_soc_register_component(dev, &mt6572_afe_component,
+					      mt6572_afe_dais,
+					      ARRAY_SIZE(mt6572_afe_dais));
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to register AFE component\n");
+
+	mt6572_afe_cpu.of_node = dev->of_node;
+	mt6572_afe_platform.of_node = dev->of_node;
+	mt6572_afe_card.dev = dev;
+	snd_soc_card_set_drvdata(&mt6572_afe_card, afe);
+	ret = devm_snd_soc_register_card(dev, &mt6572_afe_card);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to register sound card\n");
+
+	return 0;
+}
+
+static const struct of_device_id mt6572_afe_pcm_dt_match[] = {
+	{ .compatible = "mediatek,mt6572-audio" },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(of, mt6572_afe_pcm_dt_match);
+
+static struct platform_driver mt6572_afe_pcm_driver = {
+	.driver = {
+		.name = "mt6572-afe-pcm",
+		.of_match_table = mt6572_afe_pcm_dt_match,
+	},
+	.probe = mt6572_afe_pcm_dev_probe,
+};
+module_platform_driver(mt6572_afe_pcm_driver);
+
+MODULE_DESCRIPTION("MediaTek MT6572 AFE platform driver");
+MODULE_LICENSE("GPL");

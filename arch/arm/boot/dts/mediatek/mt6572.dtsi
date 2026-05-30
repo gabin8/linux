@@ -548,7 +548,8 @@
 			 */
 			compatible = "mediatek,mt6572-audsys", "syscon",
 				     "simple-mfd";
-			reg = <0x11140000 0x2000>;
+			/* AFE registers only; the SRAM at +0x1000 is a separate node. */
+			reg = <0x11140000 0x1000>;
 			#clock-cells = <1>;
 
 			afe: audio-controller {
@@ -560,6 +561,8 @@
 				 * mt6323 PMIC, reached over the PMIC-wrapper regmap.
 				 */
 				mediatek,pwrap = <&pwrap>;
+				/* DL1 playback streams from the AFE on-chip SRAM. */
+				iram = <&audio_sram>;
 				/*
 				 * AFE MCU interrupt. Stock /proc/interrupts shows
 				 * "Afe_ISR_Handle" at hwirq 96, so GIC SPI = 96-32
@@ -571,6 +574,17 @@
 				 */
 				interrupts = <GIC_SPI 64 IRQ_TYPE_LEVEL_LOW>;
 			};
+		};
+
+		/*
+		 * AFE on-chip SRAM (16 KiB) at AFE_BASE + 0x1000. Stock plays DL1
+		 * from here, not DRAM; the AFE memif only feeds the interconnect
+		 * from this SRAM. Exposed as a gen_pool so the DL1 buffer can use
+		 * it via SNDRV_DMA_TYPE_DEV_IRAM (iram phandle on the afe node).
+		 */
+		audio_sram: sram@11141000 {
+			compatible = "mmio-sram";
+			reg = <0x11141000 0x4000>;
 		};
 
 		mfgcfg: syscon@13000000 {

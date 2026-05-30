@@ -5,6 +5,15 @@ config SND_SOC_MEDIATEK
 	tristate
 	select REGMAP_MMIO
 
+config SND_SOC_MT6572
+	tristate "ASoC support for the MediaTek MT6572 chip"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	select SND_SOC_MEDIATEK
+	help
+	  This adds the ASoC platform (AFE) driver for the MediaTek MT6572
+	  SoC, for use with the on-PMIC MT6323 audio codec.
+	  Select Y if you have such a device. If unsure select "N".
+
 config SND_SOC_MT2701
 	tristate "ASoC support for Mediatek MT2701 chip"
 	depends on ARCH_MEDIATEK
