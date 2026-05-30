@@ -530,6 +530,49 @@
 			status = "disabled";
 		};
 
+		audsys: clock-controller@11140000 {
+			/*
+			 * Audio subsystem register window (AFE) @ 0x11140000,
+			 * verified from the stock kernel's AudDrv_probe, whose
+			 * ioremap(0x11140000) sets AFE_BASE_ADDRESS -- the base
+			 * Afe_Set_Reg/Afe_Get_Reg use (so AUDIO_TOP_CON0 is at
+			 * 0x11140000). NOT 0x11220000 -- that is the mt6582
+			 * sibling value and is unmapped on mt6572.
+			 * "simple-mfd" auto-populates the child AFE
+			 * platform device until a MT6572 audsys clock driver
+			 * (which would devm_of_platform_populate() itself) is
+			 * implemented; the AFE register map is this parent
+			 * syscon. AFE interrupt is hwirq 96 on the vendor
+			 * kernel; the mainline GIC SPI number, clocks and DMA
+			 * are added in later audio iterations.
+			 */
+			compatible = "mediatek,mt6572-audsys", "syscon",
+				     "simple-mfd";
+			reg = <0x11140000 0x2000>;
+			#clock-cells = <1>;
+
+			afe: audio-controller {
+				compatible = "mediatek,mt6572-audio";
+				clocks = <&topckgen CLK_TOP_AUDIO>;
+				clock-names = "audio";
+				/*
+				 * Analog codec (DAC + headphone/speaker) is in the
+				 * mt6323 PMIC, reached over the PMIC-wrapper regmap.
+				 */
+				mediatek,pwrap = <&pwrap>;
+				/*
+				 * AFE MCU interrupt. Stock /proc/interrupts shows
+				 * "Afe_ISR_Handle" at hwirq 96, so GIC SPI = 96-32
+				 * = 64 (cross-checked: stock mt_usb hwirq 52 maps
+				 * to our usb GIC_SPI 20). Active LOW: the mt6572
+				 * AudDrv requests it IRQF_TRIGGER_LOW; LEVEL_HIGH
+				 * makes the idle-high line look permanently asserted
+				 * (IRQ storm -> "nobody cared"). IRQ1 = DL1 period.
+				 */
+				interrupts = <GIC_SPI 64 IRQ_TYPE_LEVEL_LOW>;
+			};
+		};
+
 		mfgcfg: syscon@13000000 {
 			compatible = "mediatek,mt6572-mfgcfg", "syscon";
 			reg = <0x13000000 0x1000>;
