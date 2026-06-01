@@ -1,0 +1,263 @@
+// SPDX-License-Identifier: GPL-2.0
+//
+// MediaTek MT6323 PMIC analog audio codec.
+//
+// The MT6323 PMIC carries the analog audio back-end for classic mt65xx SoCs
+// (e.g. MT6572): the audio DAC, the headphone and earpiece drivers, the path to
+// an external speaker amplifier, and the mic ADC / MICBIAS. It is reached over
+// the PMIC wrapper (pwrap) regmap exposed by the parent mt6397-family MFD.
+//
+// This is the ASoC codec component; the SoC-side AFE (the front-end DMA engine
+// and CPU DAI) lives in a separate driver, joined to this codec by the machine
+// card. The analog idle baseline is written at probe; the audio clocks, the
+// AFE<->PMIC bridge, the DAC and the headphone driver are powered by DAPM, which
+// ASoC sequences from the stream-up event at the end of .prepare (so the analog
+// comes up after the AFE is on, stock order) and powers down on stop.
+
+#include <linux/bits.h>
+#include <linux/mfd/mt6397/core.h>
+#include <linux/module.h>
+#include <linux/platform_device.h>
+#include <linux/regmap.h>
+
+#include <sound/pcm.h>
+#include <sound/soc.h>
+#include <sound/soc-dapm.h>
+
+#define MT6323_CODEC_RATES	SNDRV_PCM_RATE_8000_48000
+#define MT6323_CODEC_FORMATS	(SNDRV_PCM_FMTBIT_S16_LE | \
+				 SNDRV_PCM_FMTBIT_S24_LE | \
+				 SNDRV_PCM_FMTBIT_S32_LE)
+
+/*
+ * MT6323 audio registers (PMIC 16-bit space, via the parent pwrap regmap).
+ * ABB_AFE = the AFE<->PMIC digital bridge (base 0x4000); AUDTOP = the analog
+ * DAC / headphone block (base 0x0700).
+ */
+#define ABB_AFE_CON(n)		(0x4000 + (n) * 2)
+#define AUDTOP_CON(n)		(0x0700 + (n) * 2)
+#define ABB_AFE_UP8X_FIFO_CFG0	0x401e
+#define ABB_AFE_PMIC_NEWIF_CFG0	0x4024
+#define ABB_AFE_PMIC_NEWIF_CFG1	0x4026
+#define ABB_AFE_PMIC_NEWIF_CFG2	0x4028
+#define ABB_AFE_PMIC_NEWIF_CFG3	0x402a
+
+/* MT6323 audio clocks (TOP_CKPDN / TOP_CKCON). Atomic SET/CLR aliases. */
+#define MT6323_TOP_CKPDN0_SET	0x0104
+#define MT6323_TOP_CKPDN0_CLR	0x0106
+#define PMIC_RG_CLKSQ_EN_AUD	BIT(0)
+#define MT6323_TOP_CKPDN1_SET	0x010a
+#define MT6323_TOP_CKPDN1_CLR	0x010c
+#define PMIC_RG_AUD_26M_PDN	BIT(8)
+#define MT6323_TOP_CKCON1_SET	0x0128
+#define PMIC_CKCON1_AUD_BITS	GENMASK(13, 12)
+
+struct mt6323_codec_priv {
+	struct device *dev;
+	struct regmap *regmap;		/* borrowed from the parent MT6323 MFD */
+};
+
+/* Analog + NEWIF idle baseline (present even at stock idle; no output driver). */
+static const struct reg_sequence mt6323_codec_init[] = {
+	{ MT6323_TOP_CKCON1_SET, PMIC_CKCON1_AUD_BITS },
+	{ ABB_AFE_CON(1),  0x0009 },
+	{ ABB_AFE_CON(3),  0x0221 },
+	{ ABB_AFE_CON(4),  0x0255 },
+	{ ABB_AFE_CON(5),  0x0028 },
+	{ ABB_AFE_CON(6),  0x0218 },
+	{ ABB_AFE_CON(7),  0x0204 },
+	{ ABB_AFE_CON(10), 0x0001 },
+	{ AUDTOP_CON(0),   0x6010 },
+	{ AUDTOP_CON(1),   0x0140 },
+	{ AUDTOP_CON(2),   0x00c0 },
+	{ AUDTOP_CON(3),   0x0200 },
+	{ AUDTOP_CON(5),   0x0014 },
+	{ AUDTOP_CON(6),   0x37e2 },
+	{ AUDTOP_CON(8),   0x0200 },
+	{ AUDTOP_CON(9),   0x0008 },
+	{ ABB_AFE_UP8X_FIFO_CFG0,  0x0001 },
+	{ ABB_AFE_PMIC_NEWIF_CFG0, 0x7330 },
+	{ ABB_AFE_PMIC_NEWIF_CFG1, 0x0018 },
+	{ ABB_AFE_PMIC_NEWIF_CFG2, 0x302f },
+	{ ABB_AFE_PMIC_NEWIF_CFG3, 0xf872 },
+};
+
+/* Audio clocks: CLKSQ + 26 MHz, gated with the stream. */
+static int mt6323_clk_event(struct snd_soc_dapm_widget *w,
+			    struct snd_kcontrol *kcontrol, int event)
+{
+	struct mt6323_codec_priv *priv =
+		snd_soc_component_get_drvdata(snd_soc_dapm_to_component(w->dapm));
+
+	switch (event) {
+	case SND_SOC_DAPM_PRE_PMU:
+		regmap_write(priv->regmap, MT6323_TOP_CKPDN0_SET, PMIC_RG_CLKSQ_EN_AUD);
+		regmap_write(priv->regmap, MT6323_TOP_CKPDN1_CLR, PMIC_RG_AUD_26M_PDN);
+		break;
+	case SND_SOC_DAPM_POST_PMD:
+		regmap_write(priv->regmap, MT6323_TOP_CKPDN1_SET, PMIC_RG_AUD_26M_PDN);
+		regmap_write(priv->regmap, MT6323_TOP_CKPDN0_CLR, PMIC_RG_CLKSQ_EN_AUD);
+		break;
+	}
+	return 0;
+}
+
+/* AFE<->PMIC serial bridge (NEWIF) downlink enable. */
+static int mt6323_newif_event(struct snd_soc_dapm_widget *w,
+			      struct snd_kcontrol *kcontrol, int event)
+{
+	struct mt6323_codec_priv *priv =
+		snd_soc_component_get_drvdata(snd_soc_dapm_to_component(w->dapm));
+
+	switch (event) {
+	case SND_SOC_DAPM_PRE_PMU:
+		regmap_write(priv->regmap, ABB_AFE_CON(0),  0x0001);
+		regmap_write(priv->regmap, ABB_AFE_CON(11), 0x0303);
+		break;
+	case SND_SOC_DAPM_POST_PMD:
+		regmap_write(priv->regmap, ABB_AFE_CON(11), 0x0000);
+		regmap_write(priv->regmap, ABB_AFE_CON(0),  0x0000);
+		break;
+	}
+	return 0;
+}
+
+/* Analog DAC: bias + enable on power-up, back to the idle baseline on down. */
+static int mt6323_dac_event(struct snd_soc_dapm_widget *w,
+			    struct snd_kcontrol *kcontrol, int event)
+{
+	struct mt6323_codec_priv *priv =
+		snd_soc_component_get_drvdata(snd_soc_dapm_to_component(w->dapm));
+
+	switch (event) {
+	case SND_SOC_DAPM_PRE_PMU:
+		regmap_write(priv->regmap, AUDTOP_CON(5), 0x7714);	/* DAC bias */
+		regmap_write(priv->regmap, AUDTOP_CON(0), 0x7010);	/* DAC enable */
+		break;
+	case SND_SOC_DAPM_POST_PMD:
+		regmap_write(priv->regmap, AUDTOP_CON(0), 0x6010);	/* baseline */
+		regmap_write(priv->regmap, AUDTOP_CON(5), 0x0014);	/* baseline */
+		break;
+	}
+	return 0;
+}
+
+/*
+ * Headphone driver. On power-up: depop config then enable. On power-down: drop
+ * the output driver back to the idle baseline -- DAPM powers this down before
+ * the DAC (output-to-input order), muting the HP before the feed stops.
+ */
+static int mt6323_hp_event(struct snd_soc_dapm_widget *w,
+			   struct snd_kcontrol *kcontrol, int event)
+{
+	struct mt6323_codec_priv *priv =
+		snd_soc_component_get_drvdata(snd_soc_dapm_to_component(w->dapm));
+
+	switch (event) {
+	case SND_SOC_DAPM_PRE_PMU:
+		regmap_write(priv->regmap, AUDTOP_CON(6), 0xf5ba);	/* HP drv + depop */
+		regmap_write(priv->regmap, AUDTOP_CON(4), 0x007c);	/* HP enable */
+		break;
+	case SND_SOC_DAPM_POST_PMD:
+		regmap_write(priv->regmap, AUDTOP_CON(4), 0x0000);	/* HP off */
+		regmap_write(priv->regmap, AUDTOP_CON(6), 0x37e2);	/* baseline */
+		break;
+	}
+	return 0;
+}
+
+static const struct snd_soc_dapm_widget mt6323_dapm_widgets[] = {
+	SND_SOC_DAPM_SUPPLY("AUDCLK", SND_SOC_NOPM, 0, 0, mt6323_clk_event,
+			    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+	SND_SOC_DAPM_SUPPLY("NEWIF", SND_SOC_NOPM, 0, 0, mt6323_newif_event,
+			    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+	SND_SOC_DAPM_DAC_E("DAC", NULL, SND_SOC_NOPM, 0, 0, mt6323_dac_event,
+			   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+	SND_SOC_DAPM_OUT_DRV_E("HP Driver", SND_SOC_NOPM, 0, 0, NULL, 0,
+			       mt6323_hp_event,
+			       SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+	SND_SOC_DAPM_OUTPUT("Headphone"),
+};
+
+static const struct snd_soc_dapm_route mt6323_dapm_routes[] = {
+	{ "DAC", NULL, "AIF1 Playback" },
+	{ "DAC", NULL, "AUDCLK" },
+	{ "DAC", NULL, "NEWIF" },
+	{ "HP Driver", NULL, "DAC" },
+	{ "Headphone", NULL, "HP Driver" },
+};
+
+static const struct snd_soc_component_driver mt6323_soc_component_driver = {
+	.dapm_widgets		= mt6323_dapm_widgets,
+	.num_dapm_widgets	= ARRAY_SIZE(mt6323_dapm_widgets),
+	.dapm_routes		= mt6323_dapm_routes,
+	.num_dapm_routes	= ARRAY_SIZE(mt6323_dapm_routes),
+	.endianness		= 1,
+};
+
+static struct snd_soc_dai_driver mt6323_dai_driver[] = {
+	{
+		.name = "mt6323-snd-codec-aif1",
+		.playback = {
+			.stream_name = "AIF1 Playback",
+			.channels_min = 1,
+			.channels_max = 2,
+			.rates = MT6323_CODEC_RATES,
+			.formats = MT6323_CODEC_FORMATS,
+		},
+	},
+};
+
+static int mt6323_codec_probe(struct platform_device *pdev)
+{
+	struct mt6397_chip *mt6397 = dev_get_drvdata(pdev->dev.parent);
+	struct mt6323_codec_priv *priv;
+	int ret;
+
+	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv)
+		return -ENOMEM;
+
+	priv->dev = &pdev->dev;
+	priv->regmap = mt6397->regmap;
+	if (IS_ERR(priv->regmap))
+		return PTR_ERR(priv->regmap);
+
+	platform_set_drvdata(pdev, priv);
+
+	/* Analog + NEWIF idle baseline; DAPM powers the output path per-stream. */
+	ret = regmap_multi_reg_write(priv->regmap, mt6323_codec_init,
+				     ARRAY_SIZE(mt6323_codec_init));
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret,
+				     "failed to init analog codec\n");
+
+	ret = devm_snd_soc_register_component(&pdev->dev,
+					      &mt6323_soc_component_driver,
+					      mt6323_dai_driver,
+					      ARRAY_SIZE(mt6323_dai_driver));
+	if (ret)
+		return ret;
+
+	dev_info(priv->dev, "MT6323 codec registered\n");
+
+	return 0;
+}
+
+static const struct of_device_id mt6323_codec_of_match[] = {
+	{ .compatible = "mediatek,mt6323-sound", },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, mt6323_codec_of_match);
+
+static struct platform_driver mt6323_codec_driver = {
+	.driver = {
+		.name = "mt6323-sound",
+		.of_match_table = mt6323_codec_of_match,
+	},
+	.probe = mt6323_codec_probe,
+};
+module_platform_driver(mt6323_codec_driver);
+
+MODULE_DESCRIPTION("MediaTek MT6323 PMIC audio codec driver");
+MODULE_LICENSE("GPL");
