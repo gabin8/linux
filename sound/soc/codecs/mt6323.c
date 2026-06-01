@@ -15,6 +15,7 @@
 // comes up after the AFE is on, stock order) and powers down on stop.
 
 #include <linux/bits.h>
+#include <linux/gpio/consumer.h>
 #include <linux/mfd/mt6397/core.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
@@ -55,6 +56,7 @@
 struct mt6323_codec_priv {
 	struct device *dev;
 	struct regmap *regmap;		/* borrowed from the parent MT6323 MFD */
+	struct gpio_desc *spk_gpio;	/* external speaker-amp (YDA145) enable */
 };
 
 /* Analog + NEWIF idle baseline (present even at stock idle; no output driver). */
@@ -166,6 +168,24 @@ static int mt6323_hp_event(struct snd_soc_dapm_widget *w,
 	return 0;
 }
 
+/*
+ * External speaker amplifier enable (e.g. the YDA145 on the PAP5500). Gated on
+ * after the analog path is up and off before it goes down, to avoid pops.
+ */
+static int mt6323_spk_event(struct snd_soc_dapm_widget *w,
+			    struct snd_kcontrol *kcontrol, int event)
+{
+	struct mt6323_codec_priv *priv =
+		snd_soc_component_get_drvdata(snd_soc_dapm_to_component(w->dapm));
+
+	if (!priv->spk_gpio)
+		return 0;
+
+	gpiod_set_value_cansleep(priv->spk_gpio,
+				 event == SND_SOC_DAPM_POST_PMU ? 1 : 0);
+	return 0;
+}
+
 static const struct snd_soc_dapm_widget mt6323_dapm_widgets[] = {
 	SND_SOC_DAPM_SUPPLY("AUDCLK", SND_SOC_NOPM, 0, 0, mt6323_clk_event,
 			    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
@@ -177,6 +197,10 @@ static const struct snd_soc_dapm_widget mt6323_dapm_widgets[] = {
 			       mt6323_hp_event,
 			       SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
 	SND_SOC_DAPM_OUTPUT("Headphone"),
+	SND_SOC_DAPM_OUT_DRV_E("Speaker PA", SND_SOC_NOPM, 0, 0, NULL, 0,
+			       mt6323_spk_event,
+			       SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD),
+	SND_SOC_DAPM_OUTPUT("Speaker"),
 };
 
 static const struct snd_soc_dapm_route mt6323_dapm_routes[] = {
@@ -185,6 +209,8 @@ static const struct snd_soc_dapm_route mt6323_dapm_routes[] = {
 	{ "DAC", NULL, "NEWIF" },
 	{ "HP Driver", NULL, "DAC" },
 	{ "Headphone", NULL, "HP Driver" },
+	{ "Speaker PA", NULL, "DAC" },
+	{ "Speaker", NULL, "Speaker PA" },
 };
 
 static const struct snd_soc_component_driver mt6323_soc_component_driver = {
@@ -224,6 +250,13 @@ static int mt6323_codec_probe(struct platform_device *pdev)
 		return PTR_ERR(priv->regmap);
 
 	platform_set_drvdata(pdev, priv);
+
+	/* Optional external speaker-amp enable (e.g. the YDA145); board-provided. */
+	priv->spk_gpio = devm_gpiod_get_optional(&pdev->dev, "speaker",
+						 GPIOD_OUT_LOW);
+	if (IS_ERR(priv->spk_gpio))
+		return dev_err_probe(&pdev->dev, PTR_ERR(priv->spk_gpio),
+				     "failed to get speaker-amp GPIO\n");
 
 	/* Analog + NEWIF idle baseline; DAPM powers the output path per-stream. */
 	ret = regmap_multi_reg_write(priv->regmap, mt6323_codec_init,
