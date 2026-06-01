@@ -185,6 +185,13 @@
 	regulator-boot-on;
 };
 
+&mt6323_codec {
+	pinctrl-names = "default";
+	pinctrl-0 = <&spk_pa_pins>;
+	/* YDA145 external speaker amplifier enable. */
+	speaker-gpios = <&pio 139 GPIO_ACTIVE_HIGH>;
+};
+
 &pwm {
 	pinctrl-0 = <&bl_pwm_pins>;
 	pinctrl-names = "default";
@@ -255,6 +262,13 @@
 	bl_pwm_pins: bl-pwm-pins {
 		pins {
 			pinmux = <MT6572_PIN_30_LPD16__FUNC_PWM2>;
+		};
+	};
+
+	spk_pa_pins: spk-pa-pins {
+		pins {
+			pinmux = <MT6572_PIN_139_BPI_BUS9__FUNC_GPIO139>;
+			output-low;
 		};
 	};
 
