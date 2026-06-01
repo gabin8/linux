@@ -213,7 +213,28 @@ static const struct snd_soc_dapm_route mt6323_dapm_routes[] = {
 	{ "Speaker", NULL, "Speaker PA" },
 };
 
+/*
+ * Per-output mute switches (default on -- the pins start connected, so playback
+ * works with no mixer setup). These controls live on the codec COMPONENT, so
+ * they must use the *component* pin-switch ops: the generic SOC_DAPM_PIN_SWITCH
+ * resolves the kcontrol's chip as a snd_soc_card and faults when the control is
+ * registered on a component.
+ */
+#define MT6323_PIN_SWITCH(xname) { \
+	.iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = xname " Switch", \
+	.info = snd_soc_dapm_info_pin_switch, \
+	.get = snd_soc_dapm_get_component_pin_switch, \
+	.put = snd_soc_dapm_put_component_pin_switch, \
+	.private_value = (unsigned long)xname }
+
+static const struct snd_kcontrol_new mt6323_snd_controls[] = {
+	MT6323_PIN_SWITCH("Headphone"),
+	MT6323_PIN_SWITCH("Speaker"),
+};
+
 static const struct snd_soc_component_driver mt6323_soc_component_driver = {
+	.controls		= mt6323_snd_controls,
+	.num_controls		= ARRAY_SIZE(mt6323_snd_controls),
 	.dapm_widgets		= mt6323_dapm_widgets,
 	.num_dapm_widgets	= ARRAY_SIZE(mt6323_dapm_widgets),
 	.dapm_routes		= mt6323_dapm_routes,
