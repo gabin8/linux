@@ -561,6 +561,8 @@
 				 * mt6323 PMIC, reached over the PMIC-wrapper regmap.
 				 */
 				mediatek,pwrap = <&pwrap>;
+				/* mt6323 PMIC analog codec DAI linked to the DL1 front-end. */
+				mediatek,audio-codec = <&mt6323_codec>;
 				/* DL1 playback streams from the AFE on-chip SRAM. */
 				iram = <&audio_sram>;
 				/*

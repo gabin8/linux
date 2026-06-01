@@ -93,68 +93,6 @@
 #define AFE_ADDA_NEWIF_CFG1	0x013c
 #define AFE_ADDA_NEWIF_CFG1_VAL	0x03117180
 
-/*
- * Analog codec in the mt6323 PMIC, reached over the PMIC-wrapper (pwrap) regmap
- * (16-bit). ABB_AFE = the PMIC digital-audio bridge (base 0x4000); AUDTOP = the
- * analog DAC/headphone block (base 0x700). Programmed once at probe.
- */
-#define ABB_AFE_CON(n)		(0x4000 + (n) * 2)
-#define AUDTOP_CON(n)		(0x0700 + (n) * 2)
-#define ABB_AFE_UP8X_FIFO_CFG0	0x401e
-#define ABB_AFE_PMIC_NEWIF_CFG0	0x4024
-#define ABB_AFE_PMIC_NEWIF_CFG1	0x4026
-#define ABB_AFE_PMIC_NEWIF_CFG2	0x4028
-#define ABB_AFE_PMIC_NEWIF_CFG3	0x402a
-
-/* PMIC audio clocks (mt6323 TOP_CKPDN). Atomic SET/CLR aliases. */
-#define MT6323_TOP_CKPDN0_SET	0x0104
-#define MT6323_TOP_CKPDN0_CLR	0x0106
-#define PMIC_RG_CLKSQ_EN_AUD	BIT(0)
-#define MT6323_TOP_CKPDN1_SET	0x010a
-#define MT6323_TOP_CKPDN1_CLR	0x010c
-#define PMIC_RG_AUD_26M_PDN	BIT(8)
-#define MT6323_TOP_CKCON1_SET	0x0128
-#define PMIC_CKCON1_AUD_BITS	GENMASK(13, 12)
-
-/* Always-on analog + NEWIF-PMIC baseline (present even at stock idle). */
-static const struct reg_sequence mt6572_afe_pmic_init[] = {
-	{ MT6323_TOP_CKCON1_SET, PMIC_CKCON1_AUD_BITS },
-	{ ABB_AFE_CON(1),  0x0009 },
-	{ ABB_AFE_CON(3),  0x0221 },
-	{ ABB_AFE_CON(4),  0x0255 },
-	{ ABB_AFE_CON(5),  0x0028 },
-	{ ABB_AFE_CON(6),  0x0218 },
-	{ ABB_AFE_CON(7),  0x0204 },
-	{ ABB_AFE_CON(10), 0x0001 },
-	{ AUDTOP_CON(0),   0x6010 },
-	{ AUDTOP_CON(1),   0x0140 },
-	{ AUDTOP_CON(2),   0x00c0 },
-	{ AUDTOP_CON(3),   0x0200 },
-	{ AUDTOP_CON(5),   0x0014 },
-	{ AUDTOP_CON(6),   0x37e2 },
-	{ AUDTOP_CON(8),   0x0200 },
-	{ AUDTOP_CON(9),   0x0008 },
-	{ ABB_AFE_UP8X_FIFO_CFG0,  0x0001 },
-	{ ABB_AFE_PMIC_NEWIF_CFG0, 0x7330 },
-	{ ABB_AFE_PMIC_NEWIF_CFG1, 0x0018 },
-	{ ABB_AFE_PMIC_NEWIF_CFG2, 0x302f },
-	{ ABB_AFE_PMIC_NEWIF_CFG3, 0xf872 },
-};
-
-/*
- * Analog DAC + headphone path on (stock SET_HEADPHONE_ON/SPEAKER_ON), then the
- * digital bridge. Done once at probe so the slow pwrap regmap is never touched
- * from the atomic trigger; the DAC simply idles when no DL1 data flows.
- */
-static const struct reg_sequence mt6572_afe_pmic_on[] = {
-	{ AUDTOP_CON(5),   0x7714 },	/* DAC bias / config */
-	{ AUDTOP_CON(6),   0xf5ba },	/* HP driver + depop */
-	{ AUDTOP_CON(0),   0x7010 },	/* DAC enable */
-	{ AUDTOP_CON(4),   0x007c },	/* HP / speaker enable */
-	{ ABB_AFE_CON(0),  0x0001 },	/* digital-audio bridge on */
-	{ ABB_AFE_CON(11), 0x0303 },	/* NEWIF DL enable */
-};
-
 /* AFE register regmap: own MMIO mapping with fast_io (spinlock) so the trigger
  * and the hardirq can touch it in atomic context. */
 static const struct regmap_config mt6572_afe_regmap_config = {
@@ -168,7 +106,6 @@ static const struct regmap_config mt6572_afe_regmap_config = {
 struct mt6572_afe {
 	struct device *dev;
 	struct regmap *regmap;		/* AFE registers (own MMIO, fast_io) */
-	struct regmap *pmic;		/* mt6323 PMIC analog codec (via pwrap) */
 	struct clk *clk;
 	/* DL1 stream that owns the AFE IRQ while running (set in trigger). */
 	struct snd_pcm_substream *dl1_substream;
@@ -288,12 +225,6 @@ static int mt6572_afe_pcm_prepare(struct snd_soc_component *comp,
 	if (adda_code < 0 || rate_code < 0)
 		return -EINVAL;
 
-	/* PMIC audio clocks first. */
-	if (afe->pmic) {
-		regmap_write(afe->pmic, MT6323_TOP_CKPDN0_SET, PMIC_RG_CLKSQ_EN_AUD);
-		regmap_write(afe->pmic, MT6323_TOP_CKPDN1_CLR, PMIC_RG_AUD_26M_PDN);
-	}
-
 	/* IRQ1 rate + per-period frame count (enable is in the trigger). */
 	regmap_update_bits(afe->regmap, AFE_IRQ_MCU_CON, AFE_IRQ_MCU_CON_IRQ1_RATE,
 			   FIELD_PREP(AFE_IRQ_MCU_CON_IRQ1_RATE, rate_code));
@@ -333,11 +264,6 @@ static int mt6572_afe_pcm_prepare(struct snd_soc_component *comp,
 			   AFE_DAC_CON0_AFE_ON);
 	regmap_update_bits(afe->regmap, AFE_DAC_CON1, AFE_DAC_CON1_DL1_RATE,
 			   FIELD_PREP(AFE_DAC_CON1_DL1_RATE, rate_code));
-
-	/* Analog DAC + headphone on, AFTER AFE_ON (stock order). */
-	if (afe->pmic)
-		regmap_multi_reg_write(afe->pmic, mt6572_afe_pmic_on,
-				       ARRAY_SIZE(mt6572_afe_pmic_on));
 
 	return 0;
 }
@@ -447,12 +373,15 @@ static irqreturn_t mt6572_afe_irq(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-/* Minimal card: the AFE front-end DAI -> dummy codec; the real DAC is the PMIC
- * analog block, brought up once at probe. */
+/* Minimal card: the AFE front-end DAI -> the mt6323 PMIC analog codec. The
+ * codec of_node is resolved from the mediatek,audio-codec phandle at probe. */
 static struct snd_soc_dai_link_component mt6572_afe_cpu = {
 	.dai_name = "mt6572-afe-dl1",
 };
 static struct snd_soc_dai_link_component mt6572_afe_platform;
+static struct snd_soc_dai_link_component mt6572_afe_codec = {
+	.dai_name = "mt6323-snd-codec-aif1",
+};
 
 static struct snd_soc_dai_link mt6572_afe_dai_links[] = {
 	{
@@ -460,7 +389,7 @@ static struct snd_soc_dai_link mt6572_afe_dai_links[] = {
 		.stream_name = "DL1 Playback",
 		.cpus = &mt6572_afe_cpu,
 		.num_cpus = 1,
-		.codecs = &snd_soc_dummy_dlc,
+		.codecs = &mt6572_afe_codec,
 		.num_codecs = 1,
 		.platforms = &mt6572_afe_platform,
 		.num_platforms = 1,
@@ -478,7 +407,6 @@ static int mt6572_afe_pcm_dev_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct mt6572_afe *afe;
-	struct device_node *pwrap_np;
 	struct resource res;
 	void __iomem *base;
 	int ret, irq;
@@ -514,33 +442,6 @@ static int mt6572_afe_pcm_dev_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, PTR_ERR(afe->regmap),
 				     "failed to init AFE regmap\n");
 
-	/*
-	 * The analog codec lives in the mt6323 PMIC (pwrap regmap, mutex). Bring
-	 * it fully up here, at probe -- never in the atomic hot path. Defer until
-	 * the wrapper has probed.
-	 */
-	pwrap_np = of_parse_phandle(dev->of_node, "mediatek,pwrap", 0);
-	if (pwrap_np) {
-		struct platform_device *pwrap_pdev = of_find_device_by_node(pwrap_np);
-
-		of_node_put(pwrap_np);
-		if (!pwrap_pdev)
-			return -EPROBE_DEFER;
-		afe->pmic = dev_get_regmap(&pwrap_pdev->dev, NULL);
-		put_device(&pwrap_pdev->dev);
-		if (!afe->pmic)
-			return -EPROBE_DEFER;
-
-		ret = regmap_multi_reg_write(afe->pmic, mt6572_afe_pmic_init,
-					     ARRAY_SIZE(mt6572_afe_pmic_init));
-		if (ret)
-			return dev_err_probe(dev, ret, "failed to init PMIC codec\n");
-		/* The analog DAC + audio clocks are brought up per-stream in
-		 * .prepare (process context), sequenced with the AFE. */
-	} else {
-		dev_warn(dev, "no mediatek,pwrap phandle: analog codec disabled\n");
-	}
-
 	/* Power on the AFE top + the SoC side of the AFE<->PMIC interface. */
 	regmap_write(afe->regmap, AUDIO_TOP_CON0, AUDIO_TOP_CON0_AFE_ON);
 	regmap_write(afe->regmap, AFE_ADDA_NEWIF_CFG0, AFE_ADDA_NEWIF_CFG0_VAL);
@@ -566,6 +467,16 @@ static int mt6572_afe_pcm_dev_probe(struct platform_device *pdev)
 
 	mt6572_afe_cpu.of_node = dev->of_node;
 	mt6572_afe_platform.of_node = dev->of_node;
+
+	/* Resolve the analog codec DAI (mt6323 PMIC) from the DT phandle. */
+	if (!mt6572_afe_codec.of_node) {
+		mt6572_afe_codec.of_node =
+			of_parse_phandle(dev->of_node, "mediatek,audio-codec", 0);
+		if (!mt6572_afe_codec.of_node)
+			return dev_err_probe(dev, -EINVAL,
+					     "missing mediatek,audio-codec phandle\n");
+	}
+
 	mt6572_afe_card.dev = dev;
 	snd_soc_card_set_drvdata(&mt6572_afe_card, afe);
 	ret = devm_snd_soc_register_card(dev, &mt6572_afe_card);
