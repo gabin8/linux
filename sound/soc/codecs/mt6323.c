@@ -24,6 +24,7 @@
 #include <sound/pcm.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
+#include <sound/tlv.h>
 
 #define MT6323_CODEC_RATES	SNDRV_PCM_RATE_8000_48000
 #define MT6323_CODEC_FORMATS	(SNDRV_PCM_FMTBIT_S16_LE | \
@@ -52,6 +53,18 @@
 #define PMIC_RG_AUD_26M_PDN	BIT(8)
 #define MT6323_TOP_CKCON1_SET	0x0128
 #define PMIC_CKCON1_AUD_BITS	GENMASK(13, 12)
+
+/*
+ * Output gain lives in the ZCD (zero-cross-detect) block. Each register packs
+ * the L channel at [4:0] and R at [11:7]; the 5-bit field encodes +8dB (0) ..
+ * 0dB (8) .. -10dB (18) .. -40dB (0x1f), -1dB per step (same layout as mt6358).
+ */
+#define ZCD_CON1		0x0802		/* lineout L/R gain */
+#define ZCD_CON2		0x0804		/* headphone L/R gain */
+#define ZCD_GAIN_0DB		8
+#define ZCD_GAIN_N10DB		18
+#define ZCD_GAIN_CTL_MAX	0x12		/* control range = +8dB .. -10dB */
+#define ZCD_GAIN_REG(g)		(((g) << 7) | (g))
 
 struct mt6323_codec_priv {
 	struct device *dev;
@@ -82,6 +95,9 @@ static const struct reg_sequence mt6323_codec_init[] = {
 	{ ABB_AFE_PMIC_NEWIF_CFG1, 0x0018 },
 	{ ABB_AFE_PMIC_NEWIF_CFG2, 0x302f },
 	{ ABB_AFE_PMIC_NEWIF_CFG3, 0xf872 },
+	/* Conservative default analog output gain: headphone 0dB, lineout -10dB. */
+	{ ZCD_CON2, ZCD_GAIN_REG(ZCD_GAIN_0DB) },
+	{ ZCD_CON1, ZCD_GAIN_REG(ZCD_GAIN_N10DB) },
 };
 
 /* Audio clocks: CLKSQ + 26 MHz, gated with the stream. */
@@ -133,7 +149,7 @@ static int mt6323_dac_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
-		regmap_write(priv->regmap, AUDTOP_CON(5), 0x7714);	/* DAC bias */
+		regmap_write(priv->regmap, AUDTOP_CON(5), 0x0014);	/* DAC output level: stock plays here; old 0x7714 over-drove the speaker */
 		regmap_write(priv->regmap, AUDTOP_CON(0), 0x7010);	/* DAC enable */
 		break;
 	case SND_SOC_DAPM_POST_PMD:
@@ -227,12 +243,35 @@ static const struct snd_soc_dapm_route mt6323_dapm_routes[] = {
 	.put = snd_soc_dapm_put_component_pin_switch, \
 	.private_value = (unsigned long)xname }
 
+/* Output volume: -10dB .. +8dB in 1dB steps (the inverted ZCD gain field). */
+static const DECLARE_TLV_DB_SCALE(mt6323_dl_tlv, -1000, 100, 0);
+
 static const struct snd_kcontrol_new mt6323_snd_controls[] = {
 	MT6323_PIN_SWITCH("Headphone"),
 	MT6323_PIN_SWITCH("Speaker"),
+	SOC_DOUBLE_TLV("Headphone Volume", ZCD_CON2, 0, 7, ZCD_GAIN_CTL_MAX, 1,
+		       mt6323_dl_tlv),
+	SOC_DOUBLE_TLV("Lineout Volume", ZCD_CON1, 0, 7, ZCD_GAIN_CTL_MAX, 1,
+		       mt6323_dl_tlv),
 };
 
+static int mt6323_component_probe(struct snd_soc_component *component)
+{
+	struct mt6323_codec_priv *priv = snd_soc_component_get_drvdata(component);
+
+	/*
+	 * SOC_* mixer controls reach the PMIC through the component regmap. Without
+	 * this the control writes go to a soft cache only -- reads look right but
+	 * nothing changes in hardware, and snd_soc_put_volsw returns -EIO (which
+	 * userspace tools report as "invalid value"). The DAPM events write
+	 * priv->regmap directly, so they were unaffected.
+	 */
+	snd_soc_component_init_regmap(component, priv->regmap);
+	return 0;
+}
+
 static const struct snd_soc_component_driver mt6323_soc_component_driver = {
+	.probe			= mt6323_component_probe,
 	.controls		= mt6323_snd_controls,
 	.num_controls		= ARRAY_SIZE(mt6323_snd_controls),
 	.dapm_widgets		= mt6323_dapm_widgets,
