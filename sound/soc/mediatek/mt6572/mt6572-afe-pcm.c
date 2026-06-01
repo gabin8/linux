@@ -29,6 +29,7 @@
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
+#include <sound/tlv.h>
 
 /*
  * AFE register offsets (classic mt65xx AFE layout). The mt6572 AFE window is at
@@ -81,7 +82,13 @@
 #define AFE_ADDA_DL_SRC2_CON0_RATE GENMASK(31, 28) /* DL input mode = ADDA rate code */
 #define AFE_ADDA_DL_SRC2_CON0_ON   BIT(0)	/* SRC enable (a separate write edge) */
 #define AFE_ADDA_DL_SRC2_CON1	0x010c
-#define AFE_ADDA_DL_SRC2_CON1_VAL 0xf74f0000
+#define AFE_ADDA_DL_SRC2_CON1_GAIN GENMASK(31, 16)	/* DL digital gain (BSP "dl gain") */
+/*
+ * The DL digital gain is a linear 16-bit multiplier (0xffff = 0dB unity;
+ * dB = 20*log10(g/0xffff)). Stock fixes it at 0xf74f and varies volume in
+ * software; we expose it as "Playback Volume" instead. Default ~-18dB.
+ */
+#define AFE_DL_GAIN_DEFAULT	0x203b
 #define AFE_ADDA_UL_DL_CON0	0x0124
 #define AFE_ADDA_UL_DL_CON0_ON	BIT(0)		/* ADDA block on */
 /* ADDA downlink pre-distortion; stock zeroes both for plain DL1 playback. */
@@ -109,6 +116,7 @@ struct mt6572_afe {
 	struct clk *clk;
 	/* DL1 stream that owns the AFE IRQ while running (set in trigger). */
 	struct snd_pcm_substream *dl1_substream;
+	unsigned int dl_gain;		/* DL digital gain [0,0xffff] = "Playback Volume" */
 };
 
 /* mt65xx Hz -> AFE sample-rate code (AFE_DAC_CON1 / AFE_IRQ_MCU_CON rate field). */
@@ -244,7 +252,8 @@ static int mt6572_afe_pcm_prepare(struct snd_soc_component *comp,
 		     AFE_ADDA_DL_SRC2_CON0_BASE |
 		     FIELD_PREP(AFE_ADDA_DL_SRC2_CON0_RATE, adda_code) |
 		     AFE_ADDA_DL_SRC2_CON0_ON);
-	regmap_write(afe->regmap, AFE_ADDA_DL_SRC2_CON1, AFE_ADDA_DL_SRC2_CON1_VAL);
+	regmap_write(afe->regmap, AFE_ADDA_DL_SRC2_CON1,
+		     FIELD_PREP(AFE_ADDA_DL_SRC2_CON1_GAIN, afe->dl_gain));
 	regmap_write(afe->regmap, AFE_I2S_CON1,
 		     AFE_I2S_CON1_BASE | FIELD_PREP(AFE_I2S_CON1_RATE, rate_code));
 	regmap_write(afe->regmap, AFE_ADDA_DL_SRC2_CON0,
@@ -336,8 +345,52 @@ static int mt6572_afe_pcm_construct(struct snd_soc_component *comp,
 	return 0;
 }
 
+static const DECLARE_TLV_DB_LINEAR(dl_gain_tlv, TLV_DB_GAIN_MUTE, 0);
+
+static int mt6572_dl_gain_get(struct snd_kcontrol *kcontrol,
+			      struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *comp = snd_kcontrol_chip(kcontrol);
+	struct mt6572_afe *afe = snd_soc_card_get_drvdata(comp->card);
+
+	ucontrol->value.integer.value[0] = afe->dl_gain;
+	return 0;
+}
+
+static int mt6572_dl_gain_put(struct snd_kcontrol *kcontrol,
+			      struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *comp = snd_kcontrol_chip(kcontrol);
+	struct mt6572_afe *afe = snd_soc_card_get_drvdata(comp->card);
+	unsigned int gain = ucontrol->value.integer.value[0];
+
+	if (gain > 0xffff)
+		return -EINVAL;
+	if (gain == afe->dl_gain)
+		return 0;
+
+	afe->dl_gain = gain;
+	regmap_update_bits(afe->regmap, AFE_ADDA_DL_SRC2_CON1,
+			   AFE_ADDA_DL_SRC2_CON1_GAIN,
+			   FIELD_PREP(AFE_ADDA_DL_SRC2_CON1_GAIN, gain));
+	return 1;
+}
+
+/*
+ * "Playback Volume" = the DL digital gain (DL_SRC2_CON1[31:16]), a linear 16-bit
+ * multiplier applied before the DAC. Unlike the analog DAC level it attenuates
+ * fully. Custom get/put because the AFE regmap lives on the card, not the
+ * component; the SRC setup re-applies afe->dl_gain so it survives every stream.
+ */
+static const struct snd_kcontrol_new mt6572_afe_controls[] = {
+	SOC_SINGLE_EXT_TLV("Playback Volume", SND_SOC_NOPM, 0, 0xffff, 0,
+			   mt6572_dl_gain_get, mt6572_dl_gain_put, dl_gain_tlv),
+};
+
 static const struct snd_soc_component_driver mt6572_afe_component = {
 	.name = "mt6572-afe-pcm",
+	.controls = mt6572_afe_controls,
+	.num_controls = ARRAY_SIZE(mt6572_afe_controls),
 	.open = mt6572_afe_pcm_open,
 	.hw_params = mt6572_afe_pcm_hw_params,
 	.prepare = mt6572_afe_pcm_prepare,
@@ -415,6 +468,7 @@ static int mt6572_afe_pcm_dev_probe(struct platform_device *pdev)
 	if (!afe)
 		return -ENOMEM;
 	afe->dev = dev;
+	afe->dl_gain = AFE_DL_GAIN_DEFAULT;
 	platform_set_drvdata(pdev, afe);
 
 	ret = dma_coerce_mask_and_coherent(dev, DMA_BIT_MASK(32));
