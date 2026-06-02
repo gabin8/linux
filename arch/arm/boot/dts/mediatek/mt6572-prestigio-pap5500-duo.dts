@@ -190,6 +190,8 @@
 	pinctrl-0 = <&spk_pa_pins>;
 	/* YDA145 external speaker amplifier enable. */
 	speaker-gpios = <&pio 139 GPIO_ACTIVE_HIGH>;
+	/* Headphone-jack plug detect: GPIO142 / EINT7, high = inserted. */
+	headphone-detect-gpios = <&pio 142 GPIO_ACTIVE_HIGH>;
 };
 
 &pwm {
