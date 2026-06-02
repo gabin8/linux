@@ -229,7 +229,12 @@ static const struct snd_soc_dapm_route mt6323_dapm_routes[] = {
 	{ "DAC", NULL, "NEWIF" },
 	{ "HP Driver", NULL, "DAC" },
 	{ "Headphone", NULL, "HP Driver" },
-	{ "Speaker PA", NULL, "DAC" },
+	/*
+	 * The external speaker amp (YDA145) is fed from the headphone output, so
+	 * its path runs through HP Driver -- that stage must stay powered for the
+	 * speaker even with no headphone inserted.
+	 */
+	{ "Speaker PA", NULL, "HP Driver" },
 	{ "Speaker", NULL, "Speaker PA" },
 };
 
@@ -259,6 +264,24 @@ static const struct snd_kcontrol_new mt6323_snd_controls[] = {
 		       mt6323_dl_tlv),
 };
 
+/*
+ * Jack-driven output routing: while a headphone is inserted DAPM enables the
+ * "Headphone" pin and disables "Speaker" (powering down the YDA145 PA through
+ * its widget event); on removal it does the reverse. The plug-detect jack
+ * report drives this with no userspace involvement.
+ */
+static struct snd_soc_jack_pin mt6323_jack_pins[] = {
+	{
+		.pin = "Headphone",
+		.mask = SND_JACK_HEADPHONE,
+	},
+	{
+		.pin = "Speaker",
+		.mask = SND_JACK_HEADPHONE,
+		.invert = 1,
+	},
+};
+
 static int mt6323_component_probe(struct snd_soc_component *component)
 {
 	struct mt6323_codec_priv *priv = snd_soc_component_get_drvdata(component);
@@ -284,6 +307,11 @@ static int mt6323_component_probe(struct snd_soc_component *component)
 	 */
 	ret = snd_soc_card_jack_new(component->card, "Headphone Jack",
 				    SND_JACK_HEADPHONE, &priv->hp_jack);
+	if (ret)
+		return ret;
+
+	ret = snd_soc_jack_add_pins(&priv->hp_jack, ARRAY_SIZE(mt6323_jack_pins),
+				    mt6323_jack_pins);
 	if (ret)
 		return ret;
 
