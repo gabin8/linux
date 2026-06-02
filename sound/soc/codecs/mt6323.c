@@ -15,14 +15,11 @@
 // comes up after the AFE is on, stock order) and powers down on stop.
 
 #include <linux/bits.h>
-#include <linux/gpio/consumer.h>
 #include <linux/mfd/mt6397/core.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/property.h>
 #include <linux/regmap.h>
 
-#include <sound/jack.h>
 #include <sound/pcm.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
@@ -71,9 +68,6 @@
 struct mt6323_codec_priv {
 	struct device *dev;
 	struct regmap *regmap;		/* borrowed from the parent MT6323 MFD */
-	struct gpio_desc *spk_gpio;	/* external speaker-amp (YDA145) enable */
-	struct snd_soc_jack hp_jack;	/* headphone jack -- plug detect */
-	struct snd_soc_jack_gpio hp_jack_gpio;
 };
 
 /* Analog + NEWIF idle baseline (present even at stock idle; no output driver). */
@@ -188,24 +182,6 @@ static int mt6323_hp_event(struct snd_soc_dapm_widget *w,
 	return 0;
 }
 
-/*
- * External speaker amplifier enable (e.g. the YDA145 on the PAP5500). Gated on
- * after the analog path is up and off before it goes down, to avoid pops.
- */
-static int mt6323_spk_event(struct snd_soc_dapm_widget *w,
-			    struct snd_kcontrol *kcontrol, int event)
-{
-	struct mt6323_codec_priv *priv =
-		snd_soc_component_get_drvdata(snd_soc_dapm_to_component(w->dapm));
-
-	if (!priv->spk_gpio)
-		return 0;
-
-	gpiod_set_value_cansleep(priv->spk_gpio,
-				 event == SND_SOC_DAPM_POST_PMU ? 1 : 0);
-	return 0;
-}
-
 static const struct snd_soc_dapm_widget mt6323_dapm_widgets[] = {
 	SND_SOC_DAPM_SUPPLY("AUDCLK", SND_SOC_NOPM, 0, 0, mt6323_clk_event,
 			    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
@@ -217,10 +193,6 @@ static const struct snd_soc_dapm_widget mt6323_dapm_widgets[] = {
 			       mt6323_hp_event,
 			       SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
 	SND_SOC_DAPM_OUTPUT("Headphone"),
-	SND_SOC_DAPM_OUT_DRV_E("Speaker PA", SND_SOC_NOPM, 0, 0, NULL, 0,
-			       mt6323_spk_event,
-			       SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD),
-	SND_SOC_DAPM_OUTPUT("Speaker"),
 };
 
 static const struct snd_soc_dapm_route mt6323_dapm_routes[] = {
@@ -229,13 +201,6 @@ static const struct snd_soc_dapm_route mt6323_dapm_routes[] = {
 	{ "DAC", NULL, "NEWIF" },
 	{ "HP Driver", NULL, "DAC" },
 	{ "Headphone", NULL, "HP Driver" },
-	/*
-	 * The external speaker amp (YDA145) is fed from the headphone output, so
-	 * its path runs through HP Driver -- that stage must stay powered for the
-	 * speaker even with no headphone inserted.
-	 */
-	{ "Speaker PA", NULL, "HP Driver" },
-	{ "Speaker", NULL, "Speaker PA" },
 };
 
 /*
@@ -257,35 +222,15 @@ static const DECLARE_TLV_DB_SCALE(mt6323_dl_tlv, -1000, 100, 0);
 
 static const struct snd_kcontrol_new mt6323_snd_controls[] = {
 	MT6323_PIN_SWITCH("Headphone"),
-	MT6323_PIN_SWITCH("Speaker"),
 	SOC_DOUBLE_TLV("Headphone Volume", ZCD_CON2, 0, 7, ZCD_GAIN_CTL_MAX, 1,
 		       mt6323_dl_tlv),
 	SOC_DOUBLE_TLV("Lineout Volume", ZCD_CON1, 0, 7, ZCD_GAIN_CTL_MAX, 1,
 		       mt6323_dl_tlv),
 };
 
-/*
- * Jack-driven output routing: while a headphone is inserted DAPM enables the
- * "Headphone" pin and disables "Speaker" (powering down the YDA145 PA through
- * its widget event); on removal it does the reverse. The plug-detect jack
- * report drives this with no userspace involvement.
- */
-static struct snd_soc_jack_pin mt6323_jack_pins[] = {
-	{
-		.pin = "Headphone",
-		.mask = SND_JACK_HEADPHONE,
-	},
-	{
-		.pin = "Speaker",
-		.mask = SND_JACK_HEADPHONE,
-		.invert = 1,
-	},
-};
-
 static int mt6323_component_probe(struct snd_soc_component *component)
 {
 	struct mt6323_codec_priv *priv = snd_soc_component_get_drvdata(component);
-	int ret;
 
 	/*
 	 * SOC_* mixer controls reach the PMIC through the component regmap. Without
@@ -295,45 +240,11 @@ static int mt6323_component_probe(struct snd_soc_component *component)
 	 * priv->regmap directly, so they were unaffected.
 	 */
 	snd_soc_component_init_regmap(component, priv->regmap);
-
-	/* Headphone jack detection is optional -- only when the board wires it. */
-	if (!device_property_present(component->dev, "headphone-detect-gpios"))
-		return 0;
-
-	/*
-	 * Headphone-jack plug detection on GPIO142, which routes to EINT7
-	 * (high = inserted). snd_soc_jack_add_gpios() claims the GPIO, takes its
-	 * IRQ, debounces both edges and reports SND_JACK_HEADPHONE to userspace.
-	 */
-	ret = snd_soc_card_jack_new(component->card, "Headphone Jack",
-				    SND_JACK_HEADPHONE, &priv->hp_jack);
-	if (ret)
-		return ret;
-
-	ret = snd_soc_jack_add_pins(&priv->hp_jack, ARRAY_SIZE(mt6323_jack_pins),
-				    mt6323_jack_pins);
-	if (ret)
-		return ret;
-
-	priv->hp_jack_gpio.name = "headphone-detect";
-	priv->hp_jack_gpio.report = SND_JACK_HEADPHONE;
-	priv->hp_jack_gpio.debounce_time = 200;
-	priv->hp_jack_gpio.gpiod_dev = component->dev;
-
-	return snd_soc_jack_add_gpios(&priv->hp_jack, 1, &priv->hp_jack_gpio);
-}
-
-static void mt6323_component_remove(struct snd_soc_component *component)
-{
-	struct mt6323_codec_priv *priv = snd_soc_component_get_drvdata(component);
-
-	if (priv->hp_jack_gpio.jack)
-		snd_soc_jack_free_gpios(&priv->hp_jack, 1, &priv->hp_jack_gpio);
+	return 0;
 }
 
 static const struct snd_soc_component_driver mt6323_soc_component_driver = {
 	.probe			= mt6323_component_probe,
-	.remove			= mt6323_component_remove,
 	.controls		= mt6323_snd_controls,
 	.num_controls		= ARRAY_SIZE(mt6323_snd_controls),
 	.dapm_widgets		= mt6323_dapm_widgets,
@@ -372,13 +283,6 @@ static int mt6323_codec_probe(struct platform_device *pdev)
 		return PTR_ERR(priv->regmap);
 
 	platform_set_drvdata(pdev, priv);
-
-	/* Optional external speaker-amp enable (e.g. the YDA145); board-provided. */
-	priv->spk_gpio = devm_gpiod_get_optional(&pdev->dev, "speaker",
-						 GPIOD_OUT_LOW);
-	if (IS_ERR(priv->spk_gpio))
-		return dev_err_probe(&pdev->dev, PTR_ERR(priv->spk_gpio),
-				     "failed to get speaker-amp GPIO\n");
 
 	/* Analog + NEWIF idle baseline; DAPM powers the output path per-stream. */
 	ret = regmap_multi_reg_write(priv->regmap, mt6323_codec_init,

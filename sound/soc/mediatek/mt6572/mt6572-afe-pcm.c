@@ -24,8 +24,10 @@
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/regmap.h>
 
+#include <sound/jack.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
@@ -449,11 +451,83 @@ static struct snd_soc_dai_link mt6572_afe_dai_links[] = {
 	},
 };
 
+/*
+ * Board glue: the external speaker amplifier (e.g. the YDA145) is a
+ * simple-audio-amplifier aux device fed from the codec headphone output. Its
+ * own DRV widget event drives the enable GPIO, so DAPM gates the speaker when
+ * the jack switches to headphones.
+ */
+static struct snd_soc_aux_dev mt6572_afe_speaker_amp;
+
+static const struct snd_soc_dapm_widget mt6572_afe_dapm_widgets[] = {
+	SND_SOC_DAPM_SPK("Speaker", NULL),
+};
+
+static const struct snd_soc_dapm_route mt6572_afe_dapm_routes[] = {
+	{ "INL", NULL, "HP Driver" },
+	{ "INR", NULL, "HP Driver" },
+	{ "Speaker", NULL, "OUTL" },
+	{ "Speaker", NULL, "OUTR" },
+};
+
+static struct snd_soc_jack mt6572_afe_hp_jack;
+
+static struct snd_soc_jack_pin mt6572_afe_jack_pins[] = {
+	{ .pin = "Headphone", .mask = SND_JACK_HEADPHONE },
+	{ .pin = "Speaker", .mask = SND_JACK_HEADPHONE, .invert = 1 },
+};
+
+static struct snd_soc_jack_gpio mt6572_afe_jack_gpio = {
+	.name = "hp-det",
+	.report = SND_JACK_HEADPHONE,
+	.debounce_time = 200,
+};
+
+static void mt6572_afe_jack_free(void *jack)
+{
+	snd_soc_jack_free_gpios(jack, 1, &mt6572_afe_jack_gpio);
+}
+
+/*
+ * Headphone-jack plug detection (optional, board-provided "hp-det-gpios").
+ * Insert routes audio to the headphones and powers down the speaker amp;
+ * removal does the reverse. snd_soc_jack_add_gpios() takes the GPIO IRQ
+ * (EINT7), debounces both edges and reports SND_JACK_HEADPHONE.
+ */
+static int mt6572_afe_late_probe(struct snd_soc_card *card)
+{
+	int ret;
+
+	if (!device_property_present(card->dev, "hp-det-gpios"))
+		return 0;
+
+	ret = snd_soc_card_jack_new_pins(card, "Headphone Jack",
+					 SND_JACK_HEADPHONE, &mt6572_afe_hp_jack,
+					 mt6572_afe_jack_pins,
+					 ARRAY_SIZE(mt6572_afe_jack_pins));
+	if (ret)
+		return ret;
+
+	mt6572_afe_jack_gpio.gpiod_dev = card->dev;
+	ret = snd_soc_jack_add_gpios(&mt6572_afe_hp_jack, 1,
+				     &mt6572_afe_jack_gpio);
+	if (ret)
+		return ret;
+
+	return devm_add_action_or_reset(card->dev, mt6572_afe_jack_free,
+					&mt6572_afe_hp_jack);
+}
+
 static struct snd_soc_card mt6572_afe_card = {
 	.name = "mt6572-mt6323",
 	.owner = THIS_MODULE,
 	.dai_link = mt6572_afe_dai_links,
 	.num_links = ARRAY_SIZE(mt6572_afe_dai_links),
+	.dapm_widgets = mt6572_afe_dapm_widgets,
+	.num_dapm_widgets = ARRAY_SIZE(mt6572_afe_dapm_widgets),
+	.dapm_routes = mt6572_afe_dapm_routes,
+	.num_dapm_routes = ARRAY_SIZE(mt6572_afe_dapm_routes),
+	.late_probe = mt6572_afe_late_probe,
 };
 
 static int mt6572_afe_pcm_dev_probe(struct platform_device *pdev)
@@ -529,6 +603,16 @@ static int mt6572_afe_pcm_dev_probe(struct platform_device *pdev)
 		if (!mt6572_afe_codec.of_node)
 			return dev_err_probe(dev, -EINVAL,
 					     "missing mediatek,audio-codec phandle\n");
+	}
+
+	/* Optional external speaker amplifier (simple-audio-amplifier aux dev). */
+	if (!mt6572_afe_speaker_amp.dlc.of_node) {
+		mt6572_afe_speaker_amp.dlc.of_node =
+			of_parse_phandle(dev->of_node, "mediatek,speaker-amp", 0);
+		if (mt6572_afe_speaker_amp.dlc.of_node) {
+			mt6572_afe_card.aux_dev = &mt6572_afe_speaker_amp;
+			mt6572_afe_card.num_aux_devs = 1;
+		}
 	}
 
 	mt6572_afe_card.dev = dev;
