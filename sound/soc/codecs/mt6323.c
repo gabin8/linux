@@ -19,8 +19,10 @@
 #include <linux/mfd/mt6397/core.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/regmap.h>
 
+#include <sound/jack.h>
 #include <sound/pcm.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
@@ -70,6 +72,8 @@ struct mt6323_codec_priv {
 	struct device *dev;
 	struct regmap *regmap;		/* borrowed from the parent MT6323 MFD */
 	struct gpio_desc *spk_gpio;	/* external speaker-amp (YDA145) enable */
+	struct snd_soc_jack hp_jack;	/* headphone jack -- plug detect */
+	struct snd_soc_jack_gpio hp_jack_gpio;
 };
 
 /* Analog + NEWIF idle baseline (present even at stock idle; no output driver). */
@@ -258,6 +262,7 @@ static const struct snd_kcontrol_new mt6323_snd_controls[] = {
 static int mt6323_component_probe(struct snd_soc_component *component)
 {
 	struct mt6323_codec_priv *priv = snd_soc_component_get_drvdata(component);
+	int ret;
 
 	/*
 	 * SOC_* mixer controls reach the PMIC through the component regmap. Without
@@ -267,11 +272,40 @@ static int mt6323_component_probe(struct snd_soc_component *component)
 	 * priv->regmap directly, so they were unaffected.
 	 */
 	snd_soc_component_init_regmap(component, priv->regmap);
-	return 0;
+
+	/* Headphone jack detection is optional -- only when the board wires it. */
+	if (!device_property_present(component->dev, "headphone-detect-gpios"))
+		return 0;
+
+	/*
+	 * Headphone-jack plug detection on GPIO142, which routes to EINT7
+	 * (high = inserted). snd_soc_jack_add_gpios() claims the GPIO, takes its
+	 * IRQ, debounces both edges and reports SND_JACK_HEADPHONE to userspace.
+	 */
+	ret = snd_soc_card_jack_new(component->card, "Headphone Jack",
+				    SND_JACK_HEADPHONE, &priv->hp_jack);
+	if (ret)
+		return ret;
+
+	priv->hp_jack_gpio.name = "headphone-detect";
+	priv->hp_jack_gpio.report = SND_JACK_HEADPHONE;
+	priv->hp_jack_gpio.debounce_time = 200;
+	priv->hp_jack_gpio.gpiod_dev = component->dev;
+
+	return snd_soc_jack_add_gpios(&priv->hp_jack, 1, &priv->hp_jack_gpio);
+}
+
+static void mt6323_component_remove(struct snd_soc_component *component)
+{
+	struct mt6323_codec_priv *priv = snd_soc_component_get_drvdata(component);
+
+	if (priv->hp_jack_gpio.jack)
+		snd_soc_jack_free_gpios(&priv->hp_jack, 1, &priv->hp_jack_gpio);
 }
 
 static const struct snd_soc_component_driver mt6323_soc_component_driver = {
 	.probe			= mt6323_component_probe,
+	.remove			= mt6323_component_remove,
 	.controls		= mt6323_snd_controls,
 	.num_controls		= ARRAY_SIZE(mt6323_snd_controls),
 	.dapm_widgets		= mt6323_dapm_widgets,
