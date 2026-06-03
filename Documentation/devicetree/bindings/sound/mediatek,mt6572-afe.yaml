@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/sound/mediatek,mt6572-afe.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6572 AFE PCM controller
+
+maintainers:
+  - Custom Firmware <gabin278@gmail.com>
+
+description:
+  The Audio Front-End (AFE) of the MediaTek MT6572 SoC. It provides the DL1
+  playback memif (a DMA engine streaming from the on-chip audio SRAM) and the
+  digital side of the serial audio link to the MT6323 PMIC analog codec.
+
+properties:
+  compatible:
+    const: mediatek,mt6572-audio
+
+  clocks:
+    maxItems: 1
+
+  clock-names:
+    const: audio
+
+  interrupts:
+    maxItems: 1
+
+  iram:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: on-chip audio SRAM used for the DL1 playback buffers.
+
+required:
+  - compatible
+  - clocks
+  - clock-names
+  - interrupts
+  - iram
+
+additionalProperties: false
