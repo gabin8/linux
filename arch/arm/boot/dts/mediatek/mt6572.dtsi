@@ -530,6 +530,46 @@
 			status = "disabled";
 		};
 
+		audsys: clock-controller@11140000 {
+			/*
+			 * Audio subsystem register window (AFE) @ 0x11140000,
+			 * verified from the stock kernel's AudDrv_probe, whose
+			 * ioremap(0x11140000) sets AFE_BASE_ADDRESS -- the base
+			 * Afe_Set_Reg/Afe_Get_Reg use (so AUDIO_TOP_CON0 is at
+			 * 0x11140000). NOT 0x11220000 -- that is the mt6582
+			 * sibling value and is unmapped on mt6572.
+			 * "simple-mfd" auto-populates the child AFE
+			 * platform device until a MT6572 audsys clock driver
+			 * (which would devm_of_platform_populate() itself) is
+			 * implemented; the AFE register map is this parent
+			 * syscon. AFE interrupt is hwirq 96 on the vendor
+			 * kernel; the mainline GIC SPI number, clocks and DMA
+			 * are added in later audio iterations.
+			 */
+			compatible = "mediatek,mt6572-audsys", "syscon",
+				     "simple-mfd";
+			/* AFE registers only; the SRAM at +0x1000 is a separate node. */
+			reg = <0x11140000 0x1000>;
+			#clock-cells = <1>;
+
+			afe: audio-controller {
+				compatible = "mediatek,mt6572-audio";
+				clocks = <&topckgen CLK_TOP_AUDIO>;
+				clock-names = "audio";
+				/* DL1 playback streams from the AFE on-chip SRAM. */
+				iram = <&audio_sram>;
+				/* AFE MCU IRQ: stock hwirq 96 -> GIC SPI 64; active-low (idle-high line). */
+				interrupts = <GIC_SPI 64 IRQ_TYPE_LEVEL_LOW>;
+			};
+		};
+
+		/* AFE on-chip SRAM (16 KiB) at AFE_BASE + 0x1000; the DL1 buffer
+		 * (DEV_IRAM gen_pool, "iram" phandle) lives here, not in DRAM. */
+		audio_sram: sram@11141000 {
+			compatible = "mmio-sram";
+			reg = <0x11141000 0x4000>;
+		};
+
 		mfgcfg: syscon@13000000 {
 			compatible = "mediatek,mt6572-mfgcfg", "syscon";
 			reg = <0x13000000 0x1000>;
