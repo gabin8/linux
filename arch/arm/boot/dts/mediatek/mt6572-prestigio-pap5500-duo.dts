@@ -185,6 +185,28 @@
 	regulator-boot-on;
 };
 
+/ {
+	/*
+	 * External speaker amplifier (Yamaha YDA145): a GPIO-enabled amp fed
+	 * from the codec headphone output, modelled as a generic GPIO amplifier.
+	 */
+	speaker_amp: audio-amplifier {
+		compatible = "simple-audio-amplifier";
+		pinctrl-names = "default";
+		pinctrl-0 = <&speaker_amplifier_pins>;
+		enable-gpios = <&pio 139 GPIO_ACTIVE_HIGH>;
+	};
+
+	sound {
+		compatible = "mediatek,mt6572-mt6323-sound";
+		mediatek,platform = <&afe>;
+		/* Speaker amp is an aux device; the jack switches speaker <-> HP. */
+		mediatek,speaker-amp = <&speaker_amp>;
+		/* Headphone-jack plug detect: GPIO142 / EINT7, high = inserted. */
+		hp-det-gpios = <&pio 142 GPIO_ACTIVE_HIGH>;
+	};
+};
+
 &pwm {
 	pinctrl-0 = <&bl_pwm_pins>;
 	pinctrl-names = "default";
@@ -255,6 +277,13 @@
 	bl_pwm_pins: bl-pwm-pins {
 		pins {
 			pinmux = <MT6572_PIN_30_LPD16__FUNC_PWM2>;
+		};
+	};
+
+	speaker_amplifier_pins: speaker-amplifier-pins {
+		pins {
+			pinmux = <MT6572_PIN_139_BPI_BUS9__FUNC_GPIO139>;
+			output-low;
 		};
 	};
 
