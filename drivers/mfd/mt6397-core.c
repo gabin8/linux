@@ -154,6 +154,9 @@ static const struct mfd_cell mt6323_devs[] = {
 	}, {
 		.name = "mt6323-thermal",
 		.of_compatible = "mediatek,mt6323-thermal",
+	}, {
+		.name = "mt6323-sound",
+		.of_compatible = "mediatek,mt6323-sound"
 	},
 };
 
