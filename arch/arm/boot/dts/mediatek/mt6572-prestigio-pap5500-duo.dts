@@ -6,6 +6,7 @@
 /dts-v1/;
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
 #include "mt6572.dtsi"
 #include "mt6323.dtsi"
 
@@ -184,6 +185,18 @@
 	regulator-always-on;
 	regulator-boot-on;
 };
+
+&mt6323_leds {
+	status = "okay";
+
+	led@3 {
+		reg = <3>;
+		function = LED_FUNCTION_KBD_BACKLIGHT;
+		color = <LED_COLOR_ID_WHITE>;
+		default-state = "off";
+	};
+};
+
 
 &pwm {
 	pinctrl-0 = <&bl_pwm_pins>;
