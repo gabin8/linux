@@ -279,15 +279,6 @@
 		};
 	};
 
-	pwrap_pins: pwrap-pins {
-		pins {
-			pinmux = <MT6572_PIN_8_PMIC_SPI_CSN__FUNC_PMIC_SPI_CSN>,
-				 <MT6572_PIN_9_PMIC_SPI_SCK__FUNC_PMIC_SPI_SCK>,
-				 <MT6572_PIN_10_PMIC_SPI_MOSI__FUNC_PMIC_SPI_MOSI>,
-				 <MT6572_PIN_11_PMIC_SPI_MISO__FUNC_PMIC_SPI_MISO>;
-		};
-	};
-
 	mmc0_pins: mmc0-pins {
 		pins-clk {
 			pinmux = <MT6572_PIN_44_MC0_CK__FUNC_MC0_CK>;
