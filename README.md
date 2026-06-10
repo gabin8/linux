@@ -4,6 +4,7 @@
 |--------------------------------------|-------------------------------------------------|-----------------------------|-------------------------------|-------------------------------------------------|
 | DRM                                  | 🟢 OK, needs panel improvements (power up/down) | 🟢 OK, needs sane panel     | 🟡 partial: needs panel fixes | 🟢 OK, needs panel improvements (power up/down) |
 | display brightness                   | 🔴 DEAD                                         | 🔴 DEAD                     | 🔴 DEAD                       | 🟢 OK: pwm-backlight                            |
+| keypad LED: mediatek,mt6323-led      | 🔴 TBD                                          | 🔴 TBD                      | 🔴 TBD                        | 🟢 OK: ISINK3 (white)                           |
 | vol +/- keys: mediatek,mt6779-keypad | 🟢 OK                                           | 🔴 TBD                      | 🔴 TBD                        | 🟢 OK                                           |
 | power key: mediatek,mt6323-keys      | 🟢 OK                                           | 🟢 OK                       | 🔴 TBD                        | 🟢 OK                                           |
 | haptics: regulator-haptic            | 🟢 OK                                           | 🔴 TBD                      | 🔴 TBD                        | 🟢 OK                                           |
