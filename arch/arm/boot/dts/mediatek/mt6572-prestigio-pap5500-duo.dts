@@ -67,7 +67,9 @@
 	backlight: backlight {
 		compatible = "pwm-backlight";
 		pwms = <&pwm 1 31250>;
-		default-brightness-level = <128>;
+		brightness-levels = <0 1023>;
+		num-interpolated-steps = <1023>;
+		default-brightness-level = <512>;
 		power-supply = <&mt6323_vsys_reg>;
 	};
 };
