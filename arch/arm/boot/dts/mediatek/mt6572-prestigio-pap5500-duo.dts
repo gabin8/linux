@@ -64,6 +64,19 @@
 		max-microvolt = <3300000>;
 	};
 
+	pwm-leds {
+		compatible = "pwm-leds";
+		pinctrl-0 = <&flash_pins>;
+		pinctrl-names = "default";
+
+		led-torch {
+			function = LED_FUNCTION_TORCH;
+			color = <LED_COLOR_ID_WHITE>;
+			pwms = <&pwm 0 31250>;
+			max-brightness = <255>;
+		};
+	};
+
 	backlight: backlight {
 		compatible = "pwm-backlight";
 		pwms = <&pwm 1 31250>;
@@ -323,6 +336,12 @@
 		pins {
 			pinmux = <MT6572_PIN_113_SCL_1_0__FUNC_SCL_1_0>,
 				 <MT6572_PIN_114_SDA_1_0__FUNC_SDA_1_0>;
+		};
+	};
+
+	flash_pins: flash-pins {
+		pins {
+			pinmux = <MT6572_PIN_128_PWM1__FUNC_PWM1>;
 		};
 	};
 
