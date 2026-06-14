@@ -10,7 +10,7 @@
 | power key: mediatek,mt6323-keys      | 🟢 OK                                           | 🟢 OK                       | 🔴 TBD                        | 🟢 OK                                           |
 | haptics: regulator-haptic            | 🟢 OK                                           | 🔴 TBD                      | 🔴 TBD                        | 🟢 OK                                           |
 | charger                              | 🔴 DEAD                                         | 🔴 DEAD                     | 🔴 DEAD                       | 🔴 DEAD                                         |
-| audio (playback + headphone jack)    | 🔴 TBD                                          | 🔴 TBD                      | 🔴 TBD                        | 🟡 partial: playback + jack |
+| audio (playback + headphone jack)    | 🔴 TBD                                          | 🟢 OK: playback + jack + speaker | 🔴 TBD                        | 🟢 OK: playback + jack + speaker |
 
 ### Per-device components
 |                 | JTY D101                           | Lenovo A369i              | Energy Phone Colors           | Prestigio PAP5500 DUO              |
