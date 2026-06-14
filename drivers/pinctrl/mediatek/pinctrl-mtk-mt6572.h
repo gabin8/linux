@@ -1284,7 +1284,7 @@ static const struct mtk_pin_desc mtk_pins_mt6572[] = {
     ),
     MTK_PIN(
         136, "GPIO136",
-        MTK_EINT_FUNCTION(NO_EINT_SUPPORT, NO_EINT_SUPPORT),
+        MTK_EINT_FUNCTION(4, 2),
         DRV_GRP0,
         MTK_FUNCTION(0, "GPIO136"),
         MTK_FUNCTION(1, "BPI_BUS6"),

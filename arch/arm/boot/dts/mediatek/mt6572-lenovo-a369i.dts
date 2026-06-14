@@ -60,6 +60,15 @@
 		min-microvolt = <1200000>;
 		max-microvolt = <3300000>;
 	};
+
+	/* Speaker is the MT6323 internal class-D amp, driven directly on SPK_P/N. */
+	sound {
+		compatible = "mediatek,mt6572-mt6323-sound";
+		mediatek,platform = <&afe>;
+		audio-routing = "Speaker", "Speaker Driver";
+		/* Headphone-jack detect on GPIO136 (low = inserted). */
+		hp-det-gpios = <&pio 136 GPIO_ACTIVE_LOW>;
+	};
 };
 
 &bls {
