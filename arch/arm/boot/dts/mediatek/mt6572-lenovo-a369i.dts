@@ -56,6 +56,13 @@
 		num-interpolated-steps = <1023>;
 		default-brightness-level = <512>;
 	};
+
+	sound {
+		compatible = "mediatek,mt6572-mt6323-sound";
+		mediatek,platform = <&afe>;
+		audio-routing = "Speaker", "Speaker Driver";
+		hp-det-gpios = <&pio 136 GPIO_ACTIVE_HIGH>;
+	};
 };
 
 &cpu0 {
