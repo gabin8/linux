@@ -137,6 +137,24 @@
 	};
 };
 
+&mmc0 {
+	compatible = "mediatek,mt8135-mmc";
+	pinctrl-0 = <&mmc0_pins>;
+	pinctrl-1 = <&mmc0_pins_uhs>;
+	pinctrl-names = "default", "state_uhs";
+	bus-width = <8>;
+	max-frequency = <50000000>;
+	cap-mmc-highspeed;
+	mmc-ddr-1_8v;
+	vmmc-supply = <&mt6323_vemc3v3_reg>;
+	vqmmc-supply = <&mt6323_vio18_reg>;
+	non-removable;
+
+	assigned-clocks = <&topckgen CLK_TOP_MSDC0_SEL>;
+	assigned-clock-parents = <&topckgen CLK_TOP_MPLL_D8>;
+	status = "okay";
+};
+
 &mmc1 {
 	pinctrl-0 = <&mmc1_pins>;
 	pinctrl-1 = <&mmc1_pins>;
@@ -179,6 +197,64 @@
 };
 
 &pio {
+	mmc0_pins: mmc0-pins {
+		pins-clk {
+			pinmux = <MT6572_PIN_44_MC0_CK__FUNC_MC0_CK>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <6>;
+		};
+
+		pins-cmd-dat {
+			pinmux = <MT6572_PIN_45_MC0_CMD__FUNC_MC0_CMD>,
+				 <MT6572_PIN_46_MC0_DAT0__FUNC_MC0_DAT0>,
+				 <MT6572_PIN_47_MC0_DAT1__FUNC_MC0_DAT1>,
+				 <MT6572_PIN_48_MC0_DAT2__FUNC_MC0_DAT2>,
+				 <MT6572_PIN_49_MC0_DAT3__FUNC_MC0_DAT3>,
+				 <MT6572_PIN_50_MC0_DAT4__FUNC_MC0_DAT4>,
+				 <MT6572_PIN_51_MC0_DAT5__FUNC_MC0_DAT5>,
+				 <MT6572_PIN_52_MC0_DAT6__FUNC_MC0_DAT6>,
+				 <MT6572_PIN_53_MC0_DAT7__FUNC_MC0_DAT7>;
+			input-enable;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+			drive-strength = <6>;
+		};
+
+		pins-rst {
+			pinmux = <MT6572_PIN_54_MC0_RSTB__FUNC_MC0_RSTB>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <6>;
+		};
+	};
+
+	mmc0_pins_uhs: mmc0-pins-uhs {
+		pins-clk {
+			pinmux = <MT6572_PIN_44_MC0_CK__FUNC_MC0_CK>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <8>;
+		};
+
+		pins-cmd-dat {
+			pinmux = <MT6572_PIN_45_MC0_CMD__FUNC_MC0_CMD>,
+				 <MT6572_PIN_46_MC0_DAT0__FUNC_MC0_DAT0>,
+				 <MT6572_PIN_47_MC0_DAT1__FUNC_MC0_DAT1>,
+				 <MT6572_PIN_48_MC0_DAT2__FUNC_MC0_DAT2>,
+				 <MT6572_PIN_49_MC0_DAT3__FUNC_MC0_DAT3>,
+				 <MT6572_PIN_50_MC0_DAT4__FUNC_MC0_DAT4>,
+				 <MT6572_PIN_51_MC0_DAT5__FUNC_MC0_DAT5>,
+				 <MT6572_PIN_52_MC0_DAT6__FUNC_MC0_DAT6>,
+				 <MT6572_PIN_53_MC0_DAT7__FUNC_MC0_DAT7>;
+			input-enable;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+			drive-strength = <8>;
+		};
+
+		pins-rst {
+			pinmux = <MT6572_PIN_54_MC0_RSTB__FUNC_MC0_RSTB>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <8>;
+		};
+	};
+
 	mmc1_pins: mmc1-pins {
 		pins-clk {
 			pinmux = <MT6572_PIN_91_MC1_CK__FUNC_MC1_CK>;
