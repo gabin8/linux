@@ -156,19 +156,21 @@
 };
 
 &mmc1 {
-	pinctrl-0 = <&mmc1_pins>;
-	pinctrl-1 = <&mmc1_pins>;
+	pinctrl-0 = <&mmc1_pins_default>;
+	pinctrl-1 = <&mmc1_pins_uhs>;
 	pinctrl-names = "default", "state_uhs";
 	bus-width = <4>;
-	max-frequency = <50000000>;
+	max-frequency = <200000000>;
 	cap-sd-highspeed;
-	//sd-uhs-ddr50;
-	//sd-uhs-sdr104;
 	sd-uhs-sdr12;
 	sd-uhs-sdr25;
-	//sd-uhs-sdr50;
+	sd-uhs-sdr50;
+	sd-uhs-sdr104;
+	sd-uhs-ddr50;
 	vmmc-supply = <&mt6323_vmch_reg>;
 	vqmmc-supply = <&mt6323_vmc_reg>;
+	assigned-clocks = <&topckgen CLK_TOP_MSDC1_SEL>;
+	assigned-clock-parents = <&topckgen CLK_TOP_MPLL_D10>;
 	//cd-gpios = <&gpio 18 GPIO_ACTIVE_LOW>;
 	broken-cd;
 	status = "okay";
@@ -255,7 +257,7 @@
 		};
 	};
 
-	mmc1_pins: mmc1-pins {
+	mmc1_pins_default: mmc1-pins-default {
 		pins-clk {
 			pinmux = <MT6572_PIN_91_MC1_CK__FUNC_MC1_CK>;
 			bias-pull-down;
@@ -271,6 +273,25 @@
 			input-enable;
 			bias-pull-up;
 			drive-strength = <8>;
+		};
+	};
+
+	mmc1_pins_uhs: mmc1-pins-uhs {
+		pins-clk {
+			pinmux = <MT6572_PIN_91_MC1_CK__FUNC_MC1_CK>;
+			bias-pull-down;
+			drive-strength = <16>;
+		};
+
+		pins-cmd-dat {
+			pinmux = <MT6572_PIN_92_MC1_CMD__FUNC_MC1_CMD>,
+				 <MT6572_PIN_93_MC1_DAT0__FUNC_MC1_DAT0>,
+				 <MT6572_PIN_94_MC1_DAT1__FUNC_MC1_DAT1>,
+				 <MT6572_PIN_95_MC1_DAT2__FUNC_MC1_DAT2>,
+				 <MT6572_PIN_96_MC1_DAT3__FUNC_MC1_DAT3>;
+			input-enable;
+			bias-pull-up;
+			drive-strength = <16>;
 		};
 	};
 
