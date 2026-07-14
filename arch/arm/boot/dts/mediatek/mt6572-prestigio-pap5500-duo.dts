@@ -36,6 +36,12 @@
 			reg = <0x9f800000 0x800000>;
 			no-map;
 		};
+
+		/* CONSYS EMI diagnostics window (FW trace/coredump/PSM state)
+		 * lives at fixed AP-phys 0x80080000 (FW-side 0xf0080000,
+		 * no remap register on MT6572) — below the kernel's RAM
+		 * start at 0x80100000, ioremapped directly by the connsys
+		 * glue; no reserved-memory node needed. */
 	};
 
 	battery: battery {
@@ -199,6 +205,18 @@
 	regulator-max-microvolt = <1800000>;
 	regulator-always-on;
 	regulator-boot-on;
+};
+
+&btif {
+	status = "okay";
+};
+
+&consys {
+	vcn18-supply = <&mt6323_vcn18_reg>;
+	vcn28-supply = <&mt6323_vcn28_reg>;
+	vcn33_bt-supply = <&mt6323_vcn33_bt_reg>;
+	vcn33_wifi-supply = <&mt6323_vcn33_wifi_reg>;
+	status = "okay";
 };
 
 &mt6323keys {

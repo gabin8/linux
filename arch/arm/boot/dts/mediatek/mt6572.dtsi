@@ -267,6 +267,12 @@
 					clock-names = "mfg";
 					mediatek,infracfg = <&infracfg>;
 				};
+
+				power-domain@MT6572_POWER_DOMAIN_CONN {
+					reg = <MT6572_POWER_DOMAIN_CONN>;
+					#power-domain-cells = <0>;
+					mediatek,infracfg = <&infracfg>;
+				};
 			};
 		};
 
@@ -458,6 +464,51 @@
 			clock-div = <12>;
 			#address-cells = <1>;
 			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		/* Node split (btif + btif_tx/btif_rx APDMA VFF channels) and
+		 * the clock/compatible naming follow the downstream conn_soc
+		 * BTIF driver contract (see mt7623.dtsi in BPI-Router-Linux);
+		 * consumed by the out-of-tree mt6572-connsys-modules. */
+		btif_tx: btif_tx@11000380 {
+			compatible = "mediatek,btif_tx";
+			reg = <0x11000380 0x80>;
+			interrupts = <GIC_SPI 41 IRQ_TYPE_LEVEL_LOW>;
+		};
+
+		btif_rx: btif_rx@11000400 {
+			compatible = "mediatek,btif_rx";
+			reg = <0x11000400 0x80>;
+			interrupts = <GIC_SPI 42 IRQ_TYPE_LEVEL_LOW>;
+		};
+
+		/* BTIF is at 0x1100e000 on MT6572 (0x1100c000 is the SPI
+		 * controller here — that address is BTIF only on mt7623;
+		 * downstream mt_reg_base.h: BTIF_BASE 0xF100E000). */
+		btif: btif@1100e000 {
+			compatible = "mediatek,mt6572-btif", "mediatek,btif";
+			reg = <0x1100e000 0x1000>;
+			interrupts = <GIC_SPI 52 IRQ_TYPE_LEVEL_LOW>;
+			clocks = <&topckgen CLK_TOP_BTIF>, <&topckgen CLK_TOP_APDMA>;
+			clock-names = "btifc", "apdmac";
+			status = "disabled";
+		};
+
+		/* reg order (mcu, topckgen) and resource names follow the
+		 * conn_soc glue in mt6572-connsys-modules. */
+		consys: connectivity@18070000 {
+			compatible = "mediatek,mt6572-consys";
+			reg = <0x18070000 0x1000>,
+			      <0x10000000 0x2000>;
+			interrupts = <GIC_SPI 122 IRQ_TYPE_LEVEL_LOW>,
+				     <GIC_SPI 124 IRQ_TYPE_EDGE_FALLING>;
+			interrupt-names = "btif-wakeup", "wdt";
+			power-domains = <&spm MT6572_POWER_DOMAIN_CONN>;
+			resets = <&watchdog MT6572_TOPRGU_CONSYS_CPU_SW_RST>;
+			reset-names = "connsys";
+			mediatek,pwrap-regmap = <&pwrap>;
+			mediatek,btif = <&btif>;
 			status = "disabled";
 		};
 
