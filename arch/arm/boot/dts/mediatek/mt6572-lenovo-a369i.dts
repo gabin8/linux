@@ -61,6 +61,15 @@
 		max-microvolt = <3300000>;
 	};
 
+	backlight: backlight {
+		compatible = "pwm-backlight";
+		pwms = <&pwm 1 31250>;
+		brightness-levels = <0 1023>;
+		num-interpolated-steps = <1023>;
+		default-brightness-level = <512>;
+		power-supply = <&mt6323_vsys_reg>;
+	};
+
 	sound {
 		compatible = "mediatek,mt6572-mt6323-sound";
 		mediatek,platform = <&afe>;
@@ -90,6 +99,7 @@
 		compatible = "djn,otm8018b";
 		reg = <0>;
 		vcc-supply = <&mt6323_vgp1_reg>;
+		backlight = <&backlight>;
 
 		//pinctrl-names = "default";
 		//pinctrl-0 = <&panel_pins>;
@@ -178,7 +188,19 @@
 	pinctrl-names = "default";
 };
 
+&pwm {
+	pinctrl-0 = <&bl_pwm_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
 &pio {
+	bl_pwm_pins: bl-pwm-pins {
+		pins {
+			pinmux = <MT6572_PIN_30_LPD16__FUNC_PWM2>;
+		};
+	};
+
 	mmc1_pins: mmc1-pins {
 		pins-clk {
 			pinmux = <MT6572_PIN_91_MC1_CK__FUNC_MC1_CK>;
