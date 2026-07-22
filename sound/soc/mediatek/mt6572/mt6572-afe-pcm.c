@@ -274,7 +274,7 @@ static snd_pcm_uframes_t mt6572_afe_pcm_pointer(struct snd_soc_component *comp,
 	return bytes_to_frames(runtime, cur - base);
 }
 
-static int mt6572_afe_pcm_construct(struct snd_soc_component *comp,
+static int mt6572_afe_pcm_new(struct snd_soc_component *comp,
 				    struct snd_soc_pcm_runtime *rtd)
 {
 	size_t size = mt6572_afe_hardware.buffer_bytes_max;
@@ -330,7 +330,7 @@ static const struct snd_soc_component_driver mt6572_afe_component = {
 	.prepare = mt6572_afe_pcm_prepare,
 	.trigger = mt6572_afe_pcm_trigger,
 	.pointer = mt6572_afe_pcm_pointer,
-	.pcm_construct = mt6572_afe_pcm_construct,
+	.pcm_new = mt6572_afe_pcm_new,
 };
 
 /* IRQ1 marks a DL1 period; hardirq (fast_io regmap, atomic PCM). Active-low. */
