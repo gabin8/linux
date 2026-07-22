@@ -523,7 +523,6 @@
 		};
 
 		audsys: clock-controller@11140000 {
-			/* audio clock gates + AFE syscon; simple-mfd adds the AFE child */
 			compatible = "mediatek,mt6572-audsys", "syscon",
 				     "simple-mfd";
 			reg = <0x11140000 0x1000>;
@@ -531,7 +530,7 @@
 
 			afe: audio-controller {
 				compatible = "mediatek,mt6572-audio";
-				clocks = <&topckgen CLK_TOP_AUDIO>;
+				clocks = <&topckgen CLK_TOP_AUD>;
 				iram = <&audio_sram>;
 				interrupts = <GIC_SPI 64 IRQ_TYPE_LEVEL_LOW>;
 			};
