@@ -7,16 +7,16 @@
 
 #include "linux/interrupt.h"
 #include "linux/irqreturn.h"
-#include "linux/jiffies.h"
 #include <linux/of.h>
 #include <linux/bitfield.h>
 #include <linux/input.h>
 #include <linux/kthread.h>
 #include <linux/io.h>
 #include <linux/sched/clock.h>
-#include <linux/workqueue.h>
-#include <linux/timer.h>
 #include <linux/delay.h>
+#include <linux/workqueue.h>
+#include <linux/jiffies.h>
+#include <linux/devm-helpers.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/init.h>
@@ -41,6 +41,8 @@
 #define ACCDET_CON0_1V9_MODE_OFF	0x1a10
 #define ACCDET_CON0_1V9_MODE_ON		0x1e10
 
+#define ACCDET_CON1_ENABLE		BIT(0)
+
 #define ACCDET_CON2_SWCTRL		GENMASK(2, 0)
 
 #define ACCDET_CON3_PWM_WIDTH		REGISTER_VAL(0x500)
@@ -52,9 +54,14 @@
 #define ACCDET_CON5_RISE_DELAY		GENMASK(14, 0)
 #define ACCDET_CON5_RISE_DELAY_DEFAULT	0x03f0
 
-#define ACCDET_CON6_DEBOUNCE_DEFAULT	0x3000
+/* DEBOUNCE0 (state 00): long while detecting a plug, short for button taps */
+#define ACCDET_CON6_DEBOUNCE_DETECT	0x3000
+#define ACCDET_CON6_DEBOUNCE_BUTTON	0x0400
 #define ACCDET_CON7_DEBOUNCE_DEFAULT	0x3000
 #define ACCDET_CON9_DEBOUNCE_DEFAULT	0x0020
+
+/* power down if a wake doesn't resolve to a cable within this long */
+#define ACCDET_SHUTDOWN_MS		1000
 
 #define ACCDET_CON11_IRQ_CLR		BIT(8)
 #define ACCDET_CON11_IRQ_STA		BIT(0)
@@ -81,21 +88,17 @@ struct mt6323_accdet {
 	struct regmap *regmap;
 	/* power status lock */
 	struct mutex lock;
-	struct delayed_work work;
-
-	unsigned long debounce_delay;
 
 	int jack_type;
 	int btn_type;
-	bool plugged;
+	bool powered;
+	struct delayed_work shutdown_work;
 };
 
 static int mt6323_accdet_get_jack_type(struct mt6323_accdet *accdet,
                                        enum mt6323_accdet_jack_type *jack) {
 	int ret;
 	u32 val;
-
-	dev_err(accdet->dev, "%s()\n", __func__);
 
 	ret = regmap_read(accdet->regmap, MT6323_ACCDET_CON13, &val);
 	if (ret)
@@ -110,8 +113,6 @@ static void mt6323_accdet_jack_report(struct mt6323_accdet *accdet)
 	if (!accdet->jack)
 		return;
 
-	dev_err(accdet->dev, "%s()\n", __func__);
-
 	snd_soc_jack_report(accdet->jack, accdet->jack_type | accdet->btn_type,
 	                    MT6323_ACCDET_JACK_MASK);
 }
@@ -121,8 +122,6 @@ int mt6323_accdet_enable_jack_detect(struct snd_soc_component *component,
 {
 	struct mt6323_accdet *accdet =
 		snd_soc_component_get_drvdata(component);
-
-	dev_err(accdet->dev, "%s()\n", __func__);
 
 	snd_jack_set_key(jack->jack, SND_JACK_BTN_0, KEY_PLAYPAUSE);
 	snd_jack_set_key(jack->jack, SND_JACK_BTN_1, KEY_VOLUMEDOWN);
@@ -140,8 +139,6 @@ static int mt6323_accdet_enable(struct mt6323_accdet *accdet) {
 	struct regmap *map = accdet->regmap;
 	int ret;
 
-	dev_err(accdet->dev, "%s()\n", __func__);
-
 	/* ungate clock */
 	ret = regmap_write(map, MT6323_TOP_CKPDN1_CLR, TOP_CKPDN1_ACCDET);
 	if (ret)
@@ -153,34 +150,107 @@ static int mt6323_accdet_enable(struct mt6323_accdet *accdet) {
 		return ret;
 
 	/* enable accdet */
-	return regmap_write(map, MT6323_ACCDET_CON1, 0);
+	ret = regmap_write(map, MT6323_ACCDET_CON1, ACCDET_CON1_ENABLE);
+	if (ret)
+		return ret;
+
+	accdet->powered = true;
+	return 0;
 }
 
-static int mt6323_accdet_disable(struct mt6323_accdet *accdet) {
+static int mt6323_accdet_disable(struct mt6323_accdet *accdet)
+{
 	struct regmap *map = accdet->regmap;
 	int ret;
 
-	dev_err(accdet->dev, "%s()\n", __func__);
-
-	/* disable accdet */
+	/* disable accdet + software control, gate the clock */
 	ret = regmap_write(map, MT6323_ACCDET_CON1, 0);
 	if (ret)
 		return ret;
 
-	/* disable software control */
 	ret = regmap_write(map, MT6323_ACCDET_CON2, 0);
 	if (ret)
 		return ret;
 
-	/* gate clock */
-	return regmap_write(map, MT6323_TOP_CKPDN1_SET, TOP_CKPDN1_ACCDET);
+	ret = regmap_write(map, MT6323_TOP_CKPDN1_SET, TOP_CKPDN1_ACCDET);
+	if (ret)
+		return ret;
+
+	accdet->powered = false;
+	return 0;
+}
+
+/* Power up and arm the shutdown timeout; the PMIC irq confirms a cable and
+ * cancels it, otherwise the timeout powers ACCDET back down. */
+static void mt6323_accdet_wake(struct mt6323_accdet *accdet)
+{
+	if (mt6323_accdet_enable(accdet))
+		return;
+
+	schedule_delayed_work(&accdet->shutdown_work,
+			      msecs_to_jiffies(ACCDET_SHUTDOWN_MS));
+}
+
+/* Report jack/button state from the ACCDET comparator (CON13). Caller holds the lock. */
+static void mt6323_accdet_sync(struct mt6323_accdet *accdet)
+{
+	enum mt6323_accdet_jack_type jack;
+
+	if (mt6323_accdet_get_jack_type(accdet, &jack))
+		return;
+
+	if (jack == ACCDET_NO_DEVICE) {
+		/* NO_DEVICE with nothing latched is still settling; only a real
+		 * unplug (a cable was latched) powers down. */
+		if (!accdet->jack_type)
+			return;
+
+		accdet->jack_type = 0;
+		accdet->btn_type = 0;
+		mt6323_accdet_jack_report(accdet);
+
+		/* long debounce for a clean next insertion, then power down */
+		regmap_write(accdet->regmap, MT6323_ACCDET_CON6,
+			     ACCDET_CON6_DEBOUNCE_DETECT);
+		mt6323_accdet_disable(accdet);
+		return;
+	}
+
+	/* a cable is present: cancel the pending shutdown */
+	cancel_delayed_work(&accdet->shutdown_work);
+
+	if (accdet->jack_type == SND_JACK_HEADSET) {
+		accdet->btn_type = (jack == ACCDET_HEADPHONE) ? SND_JACK_BTN_0 : 0;
+	} else if (jack == ACCDET_HEADSET) {
+		accdet->jack_type = SND_JACK_HEADSET;
+		/* short debounce for button taps */
+		regmap_write(accdet->regmap, MT6323_ACCDET_CON6,
+			     ACCDET_CON6_DEBOUNCE_BUTTON);
+	} else {
+		accdet->jack_type = SND_JACK_HEADPHONE;
+	}
+
+	mt6323_accdet_jack_report(accdet);
+}
+
+/* Powers down if a wake never resolved to a cable (spurious edge / removed
+ * before settling); a confirmed cable leaves jack_type set, so it no-ops. */
+static void mt6323_accdet_shutdown_work(struct work_struct *work)
+{
+	struct mt6323_accdet *accdet =
+		container_of(work, struct mt6323_accdet, shutdown_work.work);
+
+	guard(mutex)(&accdet->lock);
+
+	if (accdet->jack_type || !accdet->powered)
+		return;
+
+	mt6323_accdet_disable(accdet);
 }
 
 static int mt6323_accdet_init(struct mt6323_accdet *accdet) {
 	struct regmap *map = accdet->regmap;
 	int ret;
-
-	dev_err(accdet->dev, "%s()\n", __func__);
 
 	ret = regmap_write(map, MT6323_ACCDET_CON0, ACCDET_CON0_1V9_MODE_OFF);
 	if (ret)
@@ -227,7 +297,7 @@ static int mt6323_accdet_init(struct mt6323_accdet *accdet) {
 		return ret;
 
 	/* setup debounce time */
-	ret = regmap_write(map, MT6323_ACCDET_CON6, ACCDET_CON6_DEBOUNCE_DEFAULT);
+	ret = regmap_write(map, MT6323_ACCDET_CON6, ACCDET_CON6_DEBOUNCE_DETECT);
 	if (ret)
 		return ret;
 
@@ -239,26 +309,22 @@ static int mt6323_accdet_init(struct mt6323_accdet *accdet) {
 	if (ret)
 		return ret;
 
-	/* clear irq if any */
+	/* clear irq if any: write-1-to-clear pulse, then release the clear bit */
+	ret = regmap_set_bits(map, MT6323_ACCDET_CON11, ACCDET_CON11_IRQ_CLR);
+	if (ret)
+		return ret;
+
 	ret = regmap_clear_bits(map, MT6323_ACCDET_CON11, ACCDET_CON11_IRQ_CLR);
 	if (ret)
 		return ret;
 
-	/* enable interrupt (?) */
+	/* enable interrupt */
 	ret = regmap_write(map, MT6323_INT_CON1_SET, INT_CON1_ACCDET);
 	if (ret)
 		return ret;
 
-	/* we have ACCDET_EINT defined */
-	ret = mt6323_accdet_disable(accdet);
-	if (ret)
-		return ret;
-
-	ret = regmap_write(map, MT6323_ACCDET_CON2, 0);
-	if (ret)
-		return ret;
-
-	return 0;
+	/* leave ACCDET powered down; probe wakes it to seed the initial state */
+	return mt6323_accdet_disable(accdet);
 }
 
 /* PMIC interrupt handles key and unplug events */
@@ -268,96 +334,31 @@ static irqreturn_t mt6323_accdet_pmic_irq(int irq, void *data)
 
 	guard(mutex)(&accdet->lock);
 
-	dev_err(accdet->dev, "%s()\n", __func__);
+	/* ack the irq (write-1-to-clear pulse), else the PMIC line storms */
+	regmap_set_bits(accdet->regmap, MT6323_ACCDET_CON11, ACCDET_CON11_IRQ_CLR);
+	regmap_clear_bits(accdet->regmap, MT6323_ACCDET_CON11, ACCDET_CON11_IRQ_CLR);
 
-	if (accdet->plugged) {
-		regmap_clear_bits(accdet->regmap, MT6323_ACCDET_CON11,
-		                  ACCDET_CON11_IRQ_CLR);
+	if (!accdet->powered)
+		return IRQ_HANDLED;
 
-		schedule_delayed_work(&accdet->work, accdet->debounce_delay);
-	}
+	mt6323_accdet_sync(accdet);
 
 	return IRQ_HANDLED;
 }
 
-/* EINT interrupt handles plug and unplug events */
+/* EINT (mechanical plug switch): wake on insert, re-check when already powered. */
 static irqreturn_t mt6323_accdet_eint_irq(int irq, void *data)
 {
 	struct mt6323_accdet *accdet = data;
-	struct device *dev = accdet->dev;
-
-	mutex_lock(&accdet->lock);
-
-	if (mt6323_accdet_enable(accdet)) {
-		dev_err(dev, "failed to enable accdet\n");
-		goto out;
-	}
-	
-	if (!accdet->plugged) {
-		/* plug in */
-		accdet->plugged = true;
-
-		schedule_delayed_work(&accdet->work, accdet->debounce_delay);
-
-	} else {
-		/* plug out */
-		accdet->plugged = false;
-
-		/*
-		 * we need to unlock mutex to prevent deadlock, because
-		 * mt6323_accdet_work_func locks it too
-		 */
-		mutex_unlock(&accdet->lock);
-
-		cancel_delayed_work_sync(&accdet->work);
-
-		/* ...and lock again... */
-		mutex_lock(&accdet->lock);
-
-		accdet->jack_type = 0;
-		accdet->btn_type = 0;
-		mt6323_accdet_jack_report(accdet);
-
-		if (mt6323_accdet_disable(accdet))
-			dev_err(dev, "failed to disable accdet");
-	}
-
-out:
-	mutex_unlock(&accdet->lock);
-	return IRQ_HANDLED;
-}
-
-static void mt6323_accdet_work_func(struct work_struct *work)
-{
-	struct mt6323_accdet *accdet = container_of(work, struct mt6323_accdet, work.work);
-	enum mt6323_accdet_jack_type jack;
 
 	guard(mutex)(&accdet->lock);
 
-	dev_err(accdet->dev, "%s()\n", __func__);
+	if (!accdet->powered)
+		mt6323_accdet_wake(accdet);
+	else
+		mt6323_accdet_sync(accdet);
 
-	if (!accdet->plugged)
-		/* accdet will be disabled by eint interrupt handler */
-		return;
-
-	if (mt6323_accdet_get_jack_type(accdet, &jack)) {
-		dev_err(accdet->dev, "failed to get jack type\n");
-		return;
-	}
-
-	switch (jack) {
-	case ACCDET_HEADPHONE:
-		accdet->jack_type = SND_JACK_HEADPHONE;
-		break;
-	case ACCDET_HEADSET:
-		accdet->jack_type = SND_JACK_HEADSET;
-		break;
-	/* unplug is handled by interrupt */
-	default:
-		break;
-	}
-
-	mt6323_accdet_jack_report(accdet);
+	return IRQ_HANDLED;
 }
 
 static int mt6323_accdet_probe(struct platform_device *pdev)
@@ -365,7 +366,6 @@ static int mt6323_accdet_probe(struct platform_device *pdev)
 	struct mt6397_chip *mt6397 = dev_get_drvdata(pdev->dev.parent);
 	struct device *dev = &pdev->dev;
 	struct mt6323_accdet *accdet;
-	u32 delay = 256;
 	int ret, irq;
 
 	accdet = devm_kzalloc(&pdev->dev, sizeof(*accdet), GFP_KERNEL);
@@ -373,12 +373,18 @@ static int mt6323_accdet_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	accdet->dev = dev;
-
-	dev_err(accdet->dev, "%s()\n", __func__);
-	
 	accdet->regmap = mt6397->regmap;
 	if (IS_ERR(accdet->regmap))
 		return dev_err_probe(dev, PTR_ERR(accdet->regmap), "failed to get regmap\n");
+
+	ret = devm_mutex_init(dev, &accdet->lock);
+	if (ret)
+		return ret;
+
+	ret = devm_delayed_work_autocancel(dev, &accdet->shutdown_work,
+					   mt6323_accdet_shutdown_work);
+	if (ret)
+		return ret;
 
 	irq = platform_get_irq_byname(pdev, "eint");
 	if (irq < 0)
@@ -386,7 +392,7 @@ static int mt6323_accdet_probe(struct platform_device *pdev)
 
 	ret = devm_request_threaded_irq(&pdev->dev, irq,
 					NULL, mt6323_accdet_eint_irq,
-					IRQF_TRIGGER_HIGH | IRQF_ONESHOT,
+					IRQF_ONESHOT,
 					"accdet-eint", accdet);
 	if (ret)
 		return ret;
@@ -402,16 +408,6 @@ static int mt6323_accdet_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	/* optional for now */
-	device_property_read_u32(dev, "debounce-delay-ms", &delay);
-	accdet->debounce_delay = msecs_to_jiffies(delay);
-
-	ret = devm_mutex_init(dev, &accdet->lock);
-	if (ret)
-		return ret;
-
-	INIT_DELAYED_WORK(&accdet->work, mt6323_accdet_work_func);
-
 	platform_set_drvdata(pdev, accdet);
 
 	ret = devm_snd_soc_register_component(&pdev->dev,
@@ -423,7 +419,10 @@ static int mt6323_accdet_probe(struct platform_device *pdev)
 	}
 
 	mt6323_accdet_init(accdet);
-	mt6323_accdet_jack_report(accdet);
+
+	/* seed: detect a jack already in at boot, else the timeout powers down */
+	scoped_guard(mutex, &accdet->lock)
+		mt6323_accdet_wake(accdet);
 
 	return 0;
 }
