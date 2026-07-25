@@ -37,11 +37,17 @@
 			no-map;
 		};
 
-		/* CONSYS EMI diagnostics window (FW trace/coredump/PSM state)
-		 * lives at fixed AP-phys 0x80080000 (FW-side 0xf0080000,
-		 * no remap register on MT6572) — below the kernel's RAM
-		 * start at 0x80100000, ioremapped directly by the connsys
-		 * glue; no reserved-memory node needed. */
+		/* CONSYS EMI window (FW PSM ctrl-state/trace/coredump) at fixed
+		 * AP-phys 0x80080000 (no remap register on MT6572), 343 KB,
+		 * written autonomously by the CONSYS firmware. In practice LK
+		 * rewrites the /memory node to base 0x80100000, so these pages
+		 * are already outside kernel RAM; this node is belt-and-braces
+		 * documentation of the firmware's claim on the region in case
+		 * the boot chain ever passes the full 0x80000000 base. */
+		consys_emi: connsys@80080000 {
+			reg = <0x80080000 0x80000>;
+			no-map;
+		};
 	};
 
 	battery: battery {
