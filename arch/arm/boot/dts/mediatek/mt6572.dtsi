@@ -8,6 +8,7 @@
 #include <dt-bindings/phy/phy.h>
 #include <dt-bindings/thermal/thermal.h>
 #include <dt-bindings/clock/mediatek,mt6572-clk.h>
+#include <dt-bindings/gce/mediatek,mt6572-gce.h>
 #include <dt-bindings/reset/mediatek,mt6572-resets.h>
 #include <dt-bindings/power/mediatek,mt6572-power-controller.h>
 #include <dt-bindings/pinctrl/mediatek,mt6572-pinfunc.h>
@@ -568,6 +569,9 @@
 			reg = <0x14000000 0x1000>;
 			#clock-cells = <1>;
 			#reset-cells = <1>;
+			mboxes = <&gce 0 CMDQ_THR_PRIO_HIGHEST>,
+				 <&gce 1 CMDQ_THR_PRIO_HIGHEST>;
+			mediatek,gce-client-reg = <&gce SUBSYS_14XXXXXX 0 0x1000>;
 
 			port {
 				#address-cells = <1>;
@@ -598,6 +602,7 @@
 			clocks = <&mmsys CLK_MM_DISP_OVL>;
 			power-domains = <&spm MT6572_POWER_DOMAIN_DIS>;
 			iommus = <&iommu M4U_PORT_DISP_OVL>;
+			mediatek,gce-client-reg = <&gce SUBSYS_14XXXXXX 0x7000 0x1000>;
 
 			ports {
 				#address-cells = <1>;
@@ -626,6 +631,7 @@
 			clocks = <&mmsys CLK_MM_DISP_RDMA>;
 			power-domains = <&spm MT6572_POWER_DOMAIN_DIS>;
 			iommus = <&iommu M4U_PORT_DISP_RDMA>;
+			mediatek,gce-client-reg = <&gce SUBSYS_14XXXXXX 0x8000 0x1000>;
 
 			ports {
 				#address-cells = <1>;
@@ -681,6 +687,7 @@
 			interrupts = <GIC_SPI 102 IRQ_TYPE_LEVEL_LOW>;
 			clocks = <&mmsys CLK_MM_DISP_COLOR>;
 			power-domains = <&spm MT6572_POWER_DOMAIN_DIS>;
+			mediatek,gce-client-reg = <&gce SUBSYS_14XXXXXX 0xb000 0x1000>;
 
 			ports {
 				#address-cells = <1>;
@@ -740,6 +747,17 @@
 			interrupts = <GIC_SPI 92 IRQ_TYPE_LEVEL_LOW>;
 			clocks = <&mmsys CLK_MM_MUTEX_SLOW_CLOCK>;
 			power-domains = <&spm MT6572_POWER_DOMAIN_DIS>;
+			mediatek,gce-client-reg = <&gce SUBSYS_14XXXXXX 0xe000 0x1000>;
+			mediatek,gce-events = <CMDQ_EVENT_MUTEX0>;
+		};
+
+		gce: mailbox@1400f000 {
+			compatible = "mediatek,mt6572-gce";
+			reg = <0x1400f000 0x1000>;
+			interrupts = <GIC_SPI 108 IRQ_TYPE_LEVEL_LOW>;
+			clocks = <&mmsys CLK_MM_CMDQ>;
+			clock-names = "gce";
+			#mbox-cells = <2>;
 		};
 	};
 };
