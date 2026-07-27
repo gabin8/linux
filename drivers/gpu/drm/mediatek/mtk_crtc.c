@@ -595,16 +595,19 @@ static void mtk_crtc_update_config(struct mtk_crtc *mtk_crtc, bool needs_vblank)
 	if (pending_async_planes)
 		mtk_crtc->pending_async_planes = true;
 
-	if (priv->data->shadow_register) {
+	if (priv->data->shadow_register && !mtk_crtc->cmdq_client.chan) {
 		mtk_mutex_acquire(mtk_crtc->mutex);
 		mtk_crtc_ddp_config(crtc, NULL);
 		mtk_mutex_release(mtk_crtc->mutex);
 	}
 #if IS_REACHABLE(CONFIG_MTK_CMDQ)
 	if (mtk_crtc->cmdq_client.chan) {
+		cmdq_pkt_write(cmdq_handle, 0, 0x7080, 0x1337);
 		mbox_flush(mtk_crtc->cmdq_client.chan, 2000);
 		cmdq_handle->cmd_buf_size = 0;
+		cmdq_pkt_write(cmdq_handle, 0, 0x7080, 0x1337);
 		cmdq_pkt_clear_event(cmdq_handle, mtk_crtc->cmdq_event);
+		/* ! gce hangs here ! */
 		cmdq_pkt_wfe(cmdq_handle, mtk_crtc->cmdq_event, false);
 		mtk_crtc_ddp_config(crtc, cmdq_handle);
 		cmdq_pkt_eoc(cmdq_handle);
@@ -630,6 +633,7 @@ static void mtk_crtc_update_config(struct mtk_crtc *mtk_crtc, bool needs_vblank)
 
 		mbox_send_message(mtk_crtc->cmdq_client.chan, cmdq_handle);
 		mbox_client_txdone(mtk_crtc->cmdq_client.chan, 0);
+		mtk_cmdq_dump_gce_state(mtk_crtc->cmdq_client.chan);
 		goto update_config_out;
 	}
 #endif
@@ -653,9 +657,11 @@ static void mtk_crtc_ddp_irq(void *data)
 	struct drm_device *dev = mtk_crtc->base.dev;
 	if (!priv->data->shadow_register && !mtk_crtc->cmdq_client.chan)
 		mtk_crtc_ddp_config(crtc, NULL);
-	else if (mtk_crtc->cmdq_vblank_cnt > 0 && --mtk_crtc->cmdq_vblank_cnt == 0)
+	else if (mtk_crtc->cmdq_vblank_cnt > 0 && --mtk_crtc->cmdq_vblank_cnt == 0) {
 		drm_err(dev, "mtk_crtc %d CMDQ execute command timeout!\n",
 			drm_crtc_index(&mtk_crtc->base));
+		mtk_cmdq_dump_gce_state(mtk_crtc->cmdq_client.chan);
+	}
 #else
 	if (!priv->data->shadow_register)
 		mtk_crtc_ddp_config(crtc, NULL);
