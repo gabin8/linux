@@ -55,6 +55,7 @@ struct mtk_crtc {
 	struct cmdq_pkt			cmdq_handle;
 	u32				cmdq_event;
 	u32				cmdq_vblank_cnt;
+	bool				cmdq_primed;
 	wait_queue_head_t		cb_blocking_queue;
 #endif
 
@@ -602,14 +603,21 @@ static void mtk_crtc_update_config(struct mtk_crtc *mtk_crtc, bool needs_vblank)
 	}
 #if IS_REACHABLE(CONFIG_MTK_CMDQ)
 	if (mtk_crtc->cmdq_client.chan) {
-		cmdq_pkt_write(cmdq_handle, 0, 0x7080, 0x1337);
 		mbox_flush(mtk_crtc->cmdq_client.chan, 2000);
 		cmdq_handle->cmd_buf_size = 0;
-		cmdq_pkt_write(cmdq_handle, 0, 0x7080, 0x1337);
-		cmdq_pkt_clear_event(cmdq_handle, mtk_crtc->cmdq_event);
-		/* ! gce hangs here ! */
-		cmdq_pkt_wfe(cmdq_handle, mtk_crtc->cmdq_event, false);
-		mtk_crtc_ddp_config(crtc, cmdq_handle);
+		if (priv->data->shadow_register) {
+			if (mtk_crtc->cmdq_primed)
+				cmdq_pkt_wfe(cmdq_handle, mtk_crtc->cmdq_event, true);
+			mtk_crtc->cmdq_primed = true;
+
+			mtk_mutex_acquire_by_cmdq(mtk_crtc->mutex, cmdq_handle);
+			mtk_crtc_ddp_config(crtc, cmdq_handle);
+			mtk_mutex_release_by_cmdq(mtk_crtc->mutex, cmdq_handle);
+		} else {
+			cmdq_pkt_clear_event(cmdq_handle, mtk_crtc->cmdq_event);
+			cmdq_pkt_wfe(cmdq_handle, mtk_crtc->cmdq_event, false);
+			mtk_crtc_ddp_config(crtc, cmdq_handle);
+		}
 		cmdq_pkt_eoc(cmdq_handle);
 		dma_sync_single_for_device(mtk_crtc->cmdq_client.chan->mbox->dev,
 					   cmdq_handle->pa_base,
@@ -633,7 +641,6 @@ static void mtk_crtc_update_config(struct mtk_crtc *mtk_crtc, bool needs_vblank)
 
 		mbox_send_message(mtk_crtc->cmdq_client.chan, cmdq_handle);
 		mbox_client_txdone(mtk_crtc->cmdq_client.chan, 0);
-		mtk_cmdq_dump_gce_state(mtk_crtc->cmdq_client.chan);
 		goto update_config_out;
 	}
 #endif
