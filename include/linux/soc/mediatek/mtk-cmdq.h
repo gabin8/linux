@@ -477,6 +477,8 @@ static inline int cmdq_pkt_jump_rel_temp(struct cmdq_pkt *pkt, s32 offset, u8 sh
  */
 int cmdq_pkt_eoc(struct cmdq_pkt *pkt);
 
+void mtk_cmdq_dump_gce_state(struct mbox_chan *chan);
+
 #else /* IS_ENABLED(CONFIG_MTK_CMDQ) */
 
 static inline int cmdq_dev_get_client_reg(struct device *dev,

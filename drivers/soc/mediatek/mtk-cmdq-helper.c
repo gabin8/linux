@@ -212,6 +212,10 @@ static int cmdq_pkt_append_command(struct cmdq_pkt *pkt,
 	*cmd_ptr = inst;
 	pkt->cmd_buf_size += CMDQ_INST_SIZE;
 
+	u64 val;
+	memcpy(&val, &inst, 8);
+	trace_printk("%s: inst: 0x%llx\n", __func__, val);
+
 	return 0;
 }
 
@@ -614,6 +618,71 @@ int cmdq_pkt_eoc(struct cmdq_pkt *pkt)
 	return cmdq_pkt_append_command(pkt, inst);
 }
 EXPORT_SYMBOL(cmdq_pkt_eoc);
+
+struct cmdq_thread {
+	struct mbox_chan	*chan;
+	void __iomem		*base;
+	struct list_head	task_busy_list;
+	u32			priority;
+};
+
+struct cmdq {
+	struct mbox_controller	mbox;
+	void __iomem		*base;
+	int			irq;
+	u32			irq_mask;
+	const struct gce_plat	*pdata;
+	struct cmdq_thread	*thread;
+	struct clk_bulk_data	*clocks;
+	bool			suspended;
+};
+
+void mtk_cmdq_dump_gce_state(struct mbox_chan *chan)
+{
+	struct cmdq *cmdq = dev_get_drvdata(chan->mbox->dev);
+	void __iomem *base = cmdq->base;
+	struct cmdq_thread *thread = (struct cmdq_thread *)chan->con_priv;
+	u32 thread_id = thread - cmdq->thread;
+	void __iomem *t_base = base + 0x100 + (thread_id * 0x80);
+
+	pr_err("GCE base - active:0x%08x, abort (imm):0x%08x, cycles:0x%08x, abort (reg):0x%08x\n",
+	       readl(base + 0x18), readl(base + 0x20), readl(base + 0x34),
+	       readl(base + 0x50));
+
+	pr_err("GCE thread %d - suspend:0x%08x, fault flags:0x%08x, pc:0x%08x\n",
+	       thread_id, readl(t_base + 0x0C), readl(t_base + 0x10),
+	       readl(t_base + 0x20));
+
+	u32 pc = readl(t_base + 0x20);
+	void *va;
+	u32 offset;
+
+	if (pc) {
+		va = memremap(pc & ~0xFFF, 0x1000, MEMREMAP_WB);
+		if (va) {
+			offset = (pc & 0xFFF) / 4;
+
+			pr_err("GCE dump PC tool:\n");
+			if (offset >= 2)
+				pr_err("  PC-8 : 0x%08x 0x%08x\n",
+				       ((u32 *)va)[offset - 2],
+				       ((u32 *)va)[offset - 1]);
+
+			pr_err("  PC   : 0x%08x 0x%08x <--- we're here\n",
+			       ((u32 *)va)[offset], ((u32 *)va)[offset + 1]);
+
+			if (offset <= 1021)
+				pr_err("  PC+8 : 0x%08x 0x%08x\n",
+				       ((u32 *)va)[offset + 2],
+				       ((u32 *)va)[offset + 3]);
+
+			memunmap(va);
+		} else {
+			pr_err("GCE PC dump tool: bad pc\n");
+		}
+	}
+}
+EXPORT_SYMBOL(mtk_cmdq_dump_gce_state);
 
 MODULE_DESCRIPTION("MediaTek Command Queue (CMDQ) driver");
 MODULE_LICENSE("GPL v2");
