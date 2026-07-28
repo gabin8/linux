@@ -165,6 +165,10 @@ textofs-$(CONFIG_ARCH_REALTEK)  := 0x00108000
 # SA1111 DMA bug: we don't want the kernel to live in precious DMA-able memory
 ifeq ($(CONFIG_ARCH_SA1100),y)
 textofs-$(CONFIG_SA1111) := 0x00208000
+# MT65xx CONSYS firmware's EMI window is hard-wired to DRAM base + 0xxxxxx
+# (fw constant 0xF00xxxxx, no remap register on MT6572) — keep the kernel
+# image above the low 1 MB so the fw can't scribble over kernel text.
+textofs-$(CONFIG_ARCH_MEDIATEK) := 0x00208000
 endif
 textofs-$(CONFIG_ARCH_QCOM_RESERVE_SMEM) := 0x00208000
 textofs-$(CONFIG_ARCH_MESON) := 0x00208000
