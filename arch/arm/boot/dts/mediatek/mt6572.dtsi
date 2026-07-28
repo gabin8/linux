@@ -512,6 +512,18 @@
 			status = "disabled";
 		};
 
+		/* CONN_HIF: on-die AHB window of the CONSYS Wi-Fi MAC.
+		 * Driven by the gen2 wlan module (mt6572-connsys-modules),
+		 * which matches "mediatek,wifi" and reads the raw interrupt
+		 * cells, so keep the 3-cell GIC form. Stock runs this as
+		 * Linux IRQ 155 "AHB_SLAVE_HIF" (= SPI 123), no DMA IRQ. */
+		wifi: wifi@180f0000 {
+			compatible = "mediatek,wifi";
+			reg = <0x180f0000 0x100>;
+			interrupts = <GIC_SPI 123 IRQ_TYPE_LEVEL_LOW>;
+			status = "disabled";
+		};
+
 		pwm: pwm@11008000 {
 			compatible = "mediatek,mt7623-pwm";
 			reg = <0x11008000 0x1000>;
