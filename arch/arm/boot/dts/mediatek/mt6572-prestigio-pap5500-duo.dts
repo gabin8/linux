@@ -37,16 +37,6 @@
 			no-map;
 		};
 
-		/* CONSYS EMI window (FW PSM ctrl-state/trace/coredump) at fixed
-		 * AP-phys 0x80080000 (no remap register on MT6572), 343 KB,
-		 * written autonomously by the CONSYS firmware. In practice LK
-		 * rewrites the /memory node to base 0x80100000, so these pages
-		 * are already outside kernel RAM; this node is belt-and-braces
-		 * documentation of the firmware's claim on the region in case
-		 * the boot chain ever passes the full 0x80000000 base. */
-		/* Full 1 MB at DRAM base like the A369i dts: the fw's 0xF00xxxxx
-		 * constants can land anywhere in the first megabyte, and the
-		 * kernel image is kept above it via textofs (arch/arm/Makefile). */
 		consys_emi: connsys@80000000 {
 			reg = <0x80000000 0x100000>;
 			no-map;
