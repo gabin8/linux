@@ -51,6 +51,10 @@
 #define AUXADC_CON9_OSR_MASK		GENMASK(12, 10)
 #define AUXADC_DEFAULT_OSR		3
 
+/* The conversion takes microseconds, so poll for it without sleeping */
+#define AUXADC_STARTUP_DELAY_US		300
+#define AUXADC_TIMEOUT_US		32000
+
 #define MTK_PMIC_IIO_CHAN(_name, _chan, _addr)                  \
 {                                                               \
 	.type = IIO_VOLTAGE,                                    \
@@ -89,6 +93,9 @@ struct mt6323_auxadc {
 	struct regmap *regmap;
 	/* AUXADC doesn't support reading multiple channels simultaneously. */
 	struct mutex lock;
+	/* Shadowed so a conversion needs no read-modify-write on the PMIC bus */
+	unsigned int con11;
+	unsigned int con22;
 };
 
 static int mt6323_auxadc_prepare_channel(struct mt6323_auxadc *auxadc)
@@ -107,7 +114,7 @@ static int mt6323_auxadc_prepare_channel(struct mt6323_auxadc *auxadc)
 
 	ret = regmap_read_poll_timeout(map, MT6323_AUXADC_ADC19,
 				       val, !(val & AUXADC_ADC19_BUSY_MASK),
-				       10, 500);
+				       0, AUXADC_TIMEOUT_US);
 	if (ret)
 		return ret;
 
@@ -121,11 +128,13 @@ static int mt6323_auxadc_request(struct mt6323_auxadc *auxadc,
 	struct regmap *map = auxadc->regmap;
 	int ret;
 
-	ret = regmap_set_bits(map, MT6323_AUXADC_CON11, AUXADC_CON11_VBUF_EN);
+	ret = regmap_write(map, MT6323_AUXADC_CON11,
+			   auxadc->con11 | AUXADC_CON11_VBUF_EN);
 	if (ret)
 		return ret;
 
-	return regmap_set_bits(map, MT6323_AUXADC_CON22, BIT(channel));
+	return regmap_write(map, MT6323_AUXADC_CON22,
+			    auxadc->con22 | BIT(channel));
 }
 
 static int mt6323_auxadc_release(struct mt6323_auxadc *auxadc,
@@ -134,11 +143,11 @@ static int mt6323_auxadc_release(struct mt6323_auxadc *auxadc,
 	struct regmap *map = auxadc->regmap;
 	int ret;
 
-	ret = regmap_clear_bits(map, MT6323_AUXADC_CON22, BIT(channel));
+	ret = regmap_write(map, MT6323_AUXADC_CON22, auxadc->con22);
 	if (ret)
 		return ret;
 
-	return regmap_clear_bits(map, MT6323_AUXADC_CON11, AUXADC_CON11_VBUF_EN);
+	return regmap_write(map, MT6323_AUXADC_CON11, auxadc->con11);
 }
 
 static int mt6323_auxadc_read(struct mt6323_auxadc *auxadc,
@@ -150,7 +159,7 @@ static int mt6323_auxadc_read(struct mt6323_auxadc *auxadc,
 
 	ret = regmap_read_poll_timeout(map, chan->address,
 				       val, (val & AUXADC_READY_MASK),
-				       1 * USEC_PER_MSEC, 100 * USEC_PER_MSEC);
+				       0, AUXADC_TIMEOUT_US);
 	if (ret)
 		return ret;
 
@@ -191,7 +200,7 @@ static int mt6323_auxadc_read_raw(struct iio_dev *indio_dev,
 			return ret;
 
 		/* Hardware limitation: the AUXADC needs a delay to become ready. */
-		fsleep(300);
+		udelay(AUXADC_STARTUP_DELAY_US);
 
 		ret = mt6323_auxadc_read(auxadc, chan, val);
 
@@ -250,8 +259,24 @@ static int mt6323_auxadc_init(struct mt6323_auxadc *auxadc)
 	if (ret)
 		return ret;
 
-	return regmap_update_bits(map, MT6323_AUXADC_CON9, AUXADC_CON9_OSR_MASK,
-				  FIELD_PREP(AUXADC_CON9_OSR_MASK, AUXADC_DEFAULT_OSR));
+	ret = regmap_update_bits(map, MT6323_AUXADC_CON9, AUXADC_CON9_OSR_MASK,
+				 FIELD_PREP(AUXADC_CON9_OSR_MASK, AUXADC_DEFAULT_OSR));
+	if (ret)
+		return ret;
+
+	ret = regmap_read(map, MT6323_AUXADC_CON11, &auxadc->con11);
+	if (ret)
+		return ret;
+
+	auxadc->con11 &= ~AUXADC_CON11_VBUF_EN;
+
+	ret = regmap_read(map, MT6323_AUXADC_CON22, &auxadc->con22);
+	if (ret)
+		return ret;
+
+	auxadc->con22 &= ~GENMASK(ARRAY_SIZE(mt6323_auxadc_channels) - 1, 0);
+
+	return 0;
 }
 
 static const struct iio_info mt6323_auxadc_iio_info = {
