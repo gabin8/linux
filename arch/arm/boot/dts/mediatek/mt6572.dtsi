@@ -386,13 +386,13 @@
 			interrupt-parent = <&gic>;
 		};
 
-		apdma: dma-controller@11000280 {
+		apdma: dma-controller@11000480 {
 			compatible = "mediatek,mt6572-uart-dma",
 				     "mediatek,mt6577-uart-dma";
-			reg = <0x11000280 0x60>,
-			      <0x11000300 0x60>,
-			      <0x11000380 0x60>,
-			      <0x11000400 0x60>;
+			reg = <0x11000480 0x80>,
+			      <0x11000500 0x80>,
+			      <0x11000580 0x80>,
+			      <0x11000600 0x80>;
 			interrupts = <GIC_SPI 43 IRQ_TYPE_LEVEL_LOW>,
 				     <GIC_SPI 44 IRQ_TYPE_LEVEL_LOW>,
 				     <GIC_SPI 45 IRQ_TYPE_LEVEL_LOW>,
