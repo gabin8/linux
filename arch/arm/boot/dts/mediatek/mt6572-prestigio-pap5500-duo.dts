@@ -202,8 +202,21 @@
 	regulator-boot-on;
 };
 
+&btif {
+	status = "okay";
+};
 
+&consys {
+	vcn18-supply = <&mt6323_vcn18_reg>;
+	vcn28-supply = <&mt6323_vcn28_reg>;
+	vcn33_bt-supply = <&mt6323_vcn33_bt_reg>;
+	vcn33_wifi-supply = <&mt6323_vcn33_wifi_reg>;
+	status = "okay";
+};
 
+&wifi {
+	status = "okay";
+};
 
 &mt6323keys {
 	power-off-time-sec = <5>;
