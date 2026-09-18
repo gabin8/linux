@@ -35,6 +35,7 @@ static const struct scpsys_domain_data scpsys_domain_data_mt6572[] = {
 		.pwr_sta2nd_offs = SPM_PWR_STATUS_2ND,
 		.sram_pdn_bits = 0,
 		.sram_pdn_ack_bits = 0,
+		.caps = MTK_SCPD_ACTIVE_WAKEUP | MTK_SCPD_KEEP_DEFAULT_OFF,
 		.bp_cfg = {
 			BUS_PROT_INFRA_UPDATE_TOPAXI(MT6572_TOP_AXI_PROT_EN_CONN),
 		},
