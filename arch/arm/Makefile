@@ -166,6 +166,11 @@ textofs-$(CONFIG_ARCH_REALTEK)  := 0x00108000
 ifeq ($(CONFIG_ARCH_SA1100),y)
 textofs-$(CONFIG_SA1111) := 0x00208000
 endif
+# MT65xx CONSYS firmware reaches EMI through fixed 0xf00xxxxx constants that
+# alias onto the first megabyte above DRAM base, and MT6572 has no remap
+# register to move that window. Keep the kernel image clear of it; the region
+# itself is reserved no-map in the board dts.
+textofs-$(CONFIG_ARCH_MEDIATEK) := 0x00208000
 textofs-$(CONFIG_ARCH_QCOM_RESERVE_SMEM) := 0x00208000
 textofs-$(CONFIG_ARCH_MESON) := 0x00208000
 textofs-$(CONFIG_ARCH_AXXIA) := 0x00308000
