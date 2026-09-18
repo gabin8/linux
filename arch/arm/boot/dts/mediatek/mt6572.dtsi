@@ -386,6 +386,24 @@
 			interrupt-parent = <&gic>;
 		};
 
+		/* The BTIF transport's own APDMA virtual-FIFO channels. They are
+		 * driven by the out-of-tree mt6572-connsys-modules BTIF driver,
+		 * which finds them by compatible and reads the raw interrupt
+		 * cells, so keep the split nodes and the 3-cell GIC form.
+		 * Downstream mt6572: AP_DMA_BASE + 0x380/0x400, GIC SPI 41/42
+		 * (hal_btif_dma.h, mt_irq.h). */
+		btif_tx: btif-tx@11000380 {
+			compatible = "mediatek,btif_tx";
+			reg = <0x11000380 0x80>;
+			interrupts = <GIC_SPI 41 IRQ_TYPE_LEVEL_LOW>;
+		};
+
+		btif_rx: btif-rx@11000400 {
+			compatible = "mediatek,btif_rx";
+			reg = <0x11000400 0x80>;
+			interrupts = <GIC_SPI 42 IRQ_TYPE_LEVEL_LOW>;
+		};
+
 		apdma: dma-controller@11000480 {
 			compatible = "mediatek,mt6572-uart-dma",
 				     "mediatek,mt6577-uart-dma";
@@ -493,6 +511,18 @@
 			mediatek,apmixedsys = <&apmixedsys>;
 			nvmem-cells = <&thermal_calibration>;
 			nvmem-cell-names = "calibration-data";
+		};
+
+		/* BTIF is at 0x1100e000 on MT6572 (0x1100c000 is the SPI
+		 * controller here - that address is BTIF only on mt7623;
+		 * downstream mt_reg_base.h: BTIF_BASE 0xf100e000). */
+		btif: btif@1100e000 {
+			compatible = "mediatek,mt6572-btif", "mediatek,btif";
+			reg = <0x1100e000 0x1000>;
+			interrupts = <GIC_SPI 52 IRQ_TYPE_LEVEL_LOW>;
+			clocks = <&topckgen CLK_TOP_BTIF>, <&topckgen CLK_TOP_APDMA>;
+			clock-names = "btifc", "apdmac";
+			status = "disabled";
 		};
 
 		usb: usb@11100000 {
@@ -785,6 +815,23 @@
 				 <&mmsys CLK_MM_SMI_LARB0>;
 			clock-names = "apb", "smi";
 			power-domains = <&spm MT6572_POWER_DOMAIN_DIS>;
+		};
+
+		/* reg order (mcu, topckgen) and resource names follow the
+		 * conn_soc glue in mt6572-connsys-modules. */
+		consys: connectivity@18070000 {
+			compatible = "mediatek,mt6572-consys";
+			reg = <0x18070000 0x1000>,
+			      <0x10000000 0x2000>;
+			interrupts = <GIC_SPI 122 IRQ_TYPE_LEVEL_LOW>,
+				     <GIC_SPI 124 IRQ_TYPE_EDGE_FALLING>;
+			interrupt-names = "btif-wakeup", "wdt";
+			power-domains = <&spm MT6572_POWER_DOMAIN_CONN>;
+			resets = <&watchdog MT6572_TOPRGU_CONSYS_CPU_SW_RST>;
+			reset-names = "connsys";
+			mediatek,pwrap-regmap = <&pwrap>;
+			mediatek,btif = <&btif>;
+			status = "disabled";
 		};
 	};
 };
