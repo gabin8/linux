@@ -161,8 +161,12 @@
 		compatible = "goodix,gt911";
 		reg = <0x14>;
 
-		interrupt-parent = <&pio>;
-		interrupts = <1 IRQ_TYPE_EDGE_RISING>;
+		/*
+		 * No interrupt: the INT pin has to stay a plain GPIO so the
+		 * driver can drive it, see tpd_pins. Without a DT interrupt
+		 * goodix falls back to input_setup_polling(), which is how
+		 * this panel has always run here.
+		 */
 		irq-gpios = <&pio 129 GPIO_ACTIVE_HIGH>;
 		reset-gpios = <&pio 57 GPIO_ACTIVE_HIGH>;
 
@@ -401,10 +405,22 @@
 			pinmux = <PINMUX_GPIO57__FUNC_GPIO57>;
 			output-high;
 		};
+		/*
+		 * Keep INT as a GPIO, not EINT1. mtk_pinmux_gpio_request_enable()
+		 * refuses to re-mux a pin that is already sitting in its eint
+		 * function, so pre-muxing to EINT1 here leaves the pad stuck in
+		 * EINT mode - gpiod_direction_output() then only writes DIR/DOUT
+		 * and never reaches the pad. The GT911 needs the host to drive
+		 * INT to strap its I2C address and to run the power-on handshake
+		 * (GT911 Programming Guide 4.1-4.3), so the pin must be drivable.
+		 *
+		 * No bias either: the guide requires INT to be floating with no
+		 * internal pull-up or pull-down while it is an input.
+		 */
 		pins-int {
-			pinmux = <PINMUX_GPIO129__FUNC_EINT1>;
+			pinmux = <PINMUX_GPIO129__FUNC_GPIO129>;
 			input-enable;
-			bias-pull-up;
+			bias-disable;
 		};
 	};
 
