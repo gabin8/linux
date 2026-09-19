@@ -147,10 +147,19 @@
 	clock-frequency = <400000>;
 	status = "okay";
 
-	touchscreen@5d {
+	/*
+	 * The GT911 latches its I2C address from the INT pin level while
+	 * reset is released: low selects 0x5d, high selects 0x14. INT is
+	 * muxed to EINT1 here, and mtk_gpio_direction_output() only touches
+	 * the GPIO DIR/DOUT registers without changing the pin mode, so the
+	 * driver cannot drive the pad - the bias-pull-up below wins and the
+	 * controller always comes up at 0x14. Address it where it actually
+	 * is; verified by reading "915" from the product-id register 0x8140.
+	 */
+	touchscreen@14 {
 		status = "okay";
 		compatible = "goodix,gt911";
-		reg = <0x5d>;
+		reg = <0x14>;
 
 		interrupt-parent = <&pio>;
 		interrupts = <1 IRQ_TYPE_EDGE_RISING>;
