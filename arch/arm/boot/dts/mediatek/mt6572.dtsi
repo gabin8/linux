@@ -272,6 +272,8 @@
 				power-domain@MT6572_POWER_DOMAIN_DIS {
 					reg = <MT6572_POWER_DOMAIN_DIS>;
 					#power-domain-cells = <0>;
+					clocks = <&mmsys CLK_MM_MUTEX_SLOW_CLOCK>;
+					clock-names = "mm";
 				};
 
 				power-domain@MT6572_POWER_DOMAIN_MFG {
@@ -624,7 +626,6 @@
 			reg = <0x14000000 0x1000>;
 			#clock-cells = <1>;
 			#reset-cells = <1>;
-			power-domains = <&spm MT6572_POWER_DOMAIN_DIS>;
 			mboxes = <&gce 0 CMDQ_THR_PRIO_HIGHEST>,
 				 <&gce 1 CMDQ_THR_PRIO_HIGHEST>;
 			mediatek,gce-client-reg = <&gce SUBSYS_14XXXXXX 0 0x1000>;
