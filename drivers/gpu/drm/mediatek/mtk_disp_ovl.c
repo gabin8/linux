@@ -13,6 +13,7 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/reset.h>
 #include <linux/soc/mediatek/mtk-cmdq.h>
 
 #include "mtk_crtc.h"
@@ -172,6 +173,7 @@ struct mtk_disp_ovl_data {
 struct mtk_disp_ovl {
 	struct drm_crtc			*crtc;
 	struct clk			*clk;
+	struct reset_control		*reset_ctl;
 	void __iomem			*regs;
 	struct cmdq_client_reg		cmdq_reg;
 	const struct mtk_disp_ovl_data	*data;
@@ -273,8 +275,24 @@ bool mtk_ovl_is_afbc_supported(struct device *dev)
 int mtk_ovl_clk_enable(struct device *dev)
 {
 	struct mtk_disp_ovl *ovl = dev_get_drvdata(dev);
+	int ret;
 
-	return clk_prepare_enable(ovl->clk);
+	ret = clk_prepare_enable(ovl->clk);
+	if (ret)
+		return ret;
+
+	/*
+	 * A bootloader can hand the OVL over still running and scanning out
+	 * its own framebuffer. Reprogramming it live races the in-flight
+	 * frame, and when that goes wrong the first atomic commit never
+	 * completes: no vblank arrives and every wait burns its full
+	 * timeout. Put the block back to a known state first. This runs
+	 * before mtk_ddp_comp_config(), so nothing we program is lost, and
+	 * it is a no-op where the dts declares no reset.
+	 */
+	reset_control_reset(ovl->reset_ctl);
+
+	return 0;
 }
 
 void mtk_ovl_clk_disable(struct device *dev)
@@ -658,6 +676,11 @@ static int mtk_disp_ovl_probe(struct platform_device *pdev)
 	if (IS_ERR(priv->regs))
 		return dev_err_probe(dev, PTR_ERR(priv->regs),
 				     "failed to ioremap ovl\n");
+
+	priv->reset_ctl = devm_reset_control_get_optional_exclusive(dev, NULL);
+	if (IS_ERR(priv->reset_ctl))
+		return dev_err_probe(dev, PTR_ERR(priv->reset_ctl),
+				     "failed to get ovl reset\n");
 #if IS_REACHABLE(CONFIG_MTK_CMDQ)
 	ret = cmdq_dev_get_client_reg(dev, &priv->cmdq_reg, 0);
 	if (ret)

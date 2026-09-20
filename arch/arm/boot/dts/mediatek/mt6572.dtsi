@@ -646,6 +646,7 @@
 			interrupts = <GIC_SPI 103 IRQ_TYPE_LEVEL_LOW>;
 			clocks = <&mmsys CLK_MM_DISP_OVL>;
 			power-domains = <&spm MT6572_POWER_DOMAIN_DIS>;
+			resets = <&mmsys MT6572_MM_RST_B_DISP_OVL>;
 			iommus = <&iommu M4U_PORT_DISP_OVL>;
 			mediatek,gce-client-reg = <&gce SUBSYS_14XXXXXX 0x7000 0x1000>;
 
