@@ -6,6 +6,7 @@
 /dts-v1/;
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
+#include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/leds/common.h>
 #include "mt6572.dtsi"
 #include "mt6323.dtsi"
@@ -162,11 +163,19 @@
 		reg = <0x14>;
 
 		/*
-		 * No interrupt: the INT pin has to stay a plain GPIO so the
-		 * driver can drive it, see tpd_pins. Without a DT interrupt
-		 * goodix falls back to input_setup_polling(), which is how
-		 * this panel has always run here.
+		 * The INT pin has two incompatible jobs, so it gets two pinctrl
+		 * states. As a GPIO it straps the I2C address while reset is
+		 * released (driven high here, so 0x14) and runs the power-on
+		 * handshake the controller requires - drive low 50ms, then
+		 * release - without which it answers reads but never reports a
+		 * touch. As EINT1 it delivers the interrupt. goodix switches to
+		 * the "int" state once the handshake is done.
+		 *
+		 * The trigger type here is a placeholder: goodix overrides it
+		 * from the controller's own int_trigger_type config byte.
 		 */
+		interrupt-parent = <&pio>;
+		interrupts = <1 IRQ_TYPE_EDGE_RISING>;
 		irq-gpios = <&pio 129 GPIO_ACTIVE_HIGH>;
 		reset-gpios = <&pio 57 GPIO_ACTIVE_HIGH>;
 
@@ -178,7 +187,8 @@
 		touchscreen-inverted-x;
 
 		pinctrl-0 = <&tpd_pins>;
-		pinctrl-names = "default";
+		pinctrl-1 = <&tpd_int_pins>;
+		pinctrl-names = "default", "int";
 	};
 
 	light-sensor@39 {
@@ -418,7 +428,28 @@
 		 * internal pull-up or pull-down while it is an input.
 		 */
 		pins-int {
+			/*
+			 * Plain GPIO so the driver can drive INT: it straps the
+			 * address and runs the power-on handshake. No bias - the
+			 * controller drives the line itself once it is running, and
+			 * either internal pull is strong enough to override it.
+			 */
 			pinmux = <PINMUX_GPIO129__FUNC_GPIO129>;
+			input-enable;
+			bias-disable;
+		};
+	};
+
+	/*
+	 * EINT1 is shared: both pin 29 and pin 129 declare
+	 * MTK_EINT_FUNCTION(2, 1). mtk_xt_find_eint_num() prefers a pin
+	 * already muxed to its eint function and otherwise falls back to the
+	 * first pin claiming it - pin 29. Selecting this state before
+	 * request_irq() is therefore what makes the interrupt land on pin 129.
+	 */
+	tpd_int_pins: tpd-int-pins {
+		pins-int {
+			pinmux = <PINMUX_GPIO129__FUNC_EINT1>;
 			input-enable;
 			bias-disable;
 		};
