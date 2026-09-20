@@ -22,6 +22,7 @@
 #include <linux/slab.h>
 #include <linux/acpi.h>
 #include <linux/of.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/unaligned.h>
 #include "goodix.h"
 
@@ -1261,6 +1262,22 @@ retry_read_config:
 	if (error)
 		return error;
 
+	/*
+	 * Up to here INT had to be a plain GPIO: it straps the I2C address
+	 * while reset is released and carries the power-on handshake. Only
+	 * now can it become an interrupt. Boards that need the pad re-muxed
+	 * describe it as an "int" pinctrl state; where the eint number maps
+	 * to more than one pad this is also what selects the right one, so
+	 * it has to happen before the irq is requested.
+	 */
+	if (ts->pins_int) {
+		error = pinctrl_select_state(ts->pinctrl, ts->pins_int);
+		if (error)
+			dev_warn(&ts->client->dev,
+				 "failed to select int pinctrl state: %d\n",
+				 error);
+	}
+
 	ts->irq_flags = goodix_irq_flags[ts->int_trigger_type] | IRQF_ONESHOT;
 	error = goodix_request_irq(ts);
 	if (error) {
@@ -1341,6 +1358,21 @@ static int goodix_ts_probe(struct i2c_client *client)
 	error = goodix_get_gpio_config(ts);
 	if (error)
 		return error;
+
+	/*
+	 * Optional: a board that has to re-mux the INT pad away from its
+	 * GPIO function once the reset handshake is done describes that as
+	 * an "int" pinctrl state. Absent on everything else, so a missing
+	 * handle or state is not an error.
+	 */
+	ts->pinctrl = devm_pinctrl_get(&client->dev);
+	if (IS_ERR(ts->pinctrl)) {
+		ts->pinctrl = NULL;
+	} else {
+		ts->pins_int = pinctrl_lookup_state(ts->pinctrl, "int");
+		if (IS_ERR(ts->pins_int))
+			ts->pins_int = NULL;
+	}
 
 	/* power up the controller */
 	error = regulator_enable(ts->avdd28);
