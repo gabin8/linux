@@ -140,6 +140,8 @@
 				 <&topckgen CLK_TOP_MFG_SEL>;
 
 	operating-points-v2 = <&gpu_opp_table>;
+
+	status = "okay";
 };
 
 &i2c1 {
