@@ -405,8 +405,13 @@
 		};
 
 		pins-rst {
+			/*
+			 * Plain bias: the R1R0 pull strengths only exist for
+			 * pins 44-53, so an R1R0 value here is rejected and
+			 * takes the whole pin group - and the eMMC - with it.
+			 */
 			pinmux = <PINMUX_GPIO54__FUNC_MC0_RSTB>;
-			bias-pull-up = <MTK_PUPD_SET_R1R0_10>;
+			bias-pull-up;
 		};
 	};
 
