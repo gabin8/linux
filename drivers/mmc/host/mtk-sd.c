@@ -2885,6 +2885,18 @@ static const struct cqhci_host_ops msdc_cmdq_ops = {
 	.post_disable = msdc_cqe_post_disable,
 };
 
+/*
+ * The second bank of tuning delay cells lives at
+ * pad_tune_reg + TUNING_REG2_FIXED_OFFEST. Where pad_tune_reg is
+ * MSDC_PAD_TUNE (0xec) that offset lands on MSDC_PAD_TUNE0 (0xf0), which is
+ * the primary tune register of the newer register layout rather than a second
+ * bank, so those controllers only have the first 32 delay cells.
+ */
+static inline bool msdc_has_pad_tune2(struct msdc_host *host)
+{
+	return host->top_base || host->dev_comp->pad_tune_reg != MSDC_PAD_TUNE;
+}
+
 static void msdc_of_property_parse(struct platform_device *pdev,
 				   struct msdc_host *host)
 {
@@ -2913,7 +2925,7 @@ static void msdc_of_property_parse(struct platform_device *pdev,
 
 	if (of_property_read_u32(pdev->dev.of_node, "mediatek,tuning-step",
 				 &host->tuning_step)) {
-		if (mmc->caps2 & MMC_CAP2_NO_MMC)
+		if ((mmc->caps2 & MMC_CAP2_NO_MMC) && msdc_has_pad_tune2(host))
 			host->tuning_step = PAD_DELAY_FULL;
 		else
 			host->tuning_step = PAD_DELAY_HALF;
