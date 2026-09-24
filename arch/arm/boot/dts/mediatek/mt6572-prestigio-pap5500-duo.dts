@@ -33,11 +33,6 @@
 		#size-cells = <1>;
 		ranges;
 
-		framebuffer_reserved: framebuffer@9f800000 {
-			reg = <0x9f800000 0x800000>;
-			no-map;
-		};
-
 		connsys@80000000 {
 			reg = <0x80000000 0x100000>;
 			no-map;
