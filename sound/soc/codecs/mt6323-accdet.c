@@ -47,7 +47,8 @@
 
 #define ACCDET_CON3_PWM_WIDTH		REGISTER_VAL(0x500)
 
-#define ACCDET_CON4_PWM_THRESHOLD	REGISTER_VAL(0x400)
+/* Threshold at the width: the mic bias is held steady rather than pulsed */
+#define ACCDET_CON4_PWM_THRESHOLD	ACCDET_CON3_PWM_WIDTH
 
 #define ACCDET_CON5_FALL_DELAY		BIT(15)
 #define ACCDET_CON5_RISE_DELAY		GENMASK(14, 0)
@@ -65,9 +66,9 @@
 #define ACCDET_SHUTDOWN_MS		1000
 
 /*
- * Headphones without a mic have no buttons to watch, and the mic-bias PWM is
- * audible in them as a trill. Power down once the plug has settled (a slow
- * insertion may still turn out to be a headset); the EINT catches the unplug.
+ * Headphones without a mic have no buttons to watch and short the mic bias to
+ * ground. Power down once the plug has settled (a slow insertion may still
+ * turn out to be a headset); the EINT catches the unplug.
  */
 #define ACCDET_HEADPHONE_SHUTDOWN_MS	5000
 
@@ -141,11 +142,6 @@ static int mt6323_accdet_get_btn_type(struct mt6323_accdet *accdet)
 	if (!accdet->adc)
 		return SND_JACK_BTN_0;
 
-	ret = regmap_write(accdet->regmap, MT6323_ACCDET_CON4,
-			   ACCDET_CON3_PWM_WIDTH);
-	if (ret)
-		return SND_JACK_BTN_0;
-
 	ret = regmap_write(accdet->regmap, MT6323_ACCDET_CON0,
 			   ACCDET_CON0_1V9_MODE_ON);
 	if (!ret) {
@@ -155,8 +151,6 @@ static int mt6323_accdet_get_btn_type(struct mt6323_accdet *accdet)
 
 	regmap_write(accdet->regmap, MT6323_ACCDET_CON0,
 		     ACCDET_CON0_1V9_MODE_OFF);
-	regmap_write(accdet->regmap, MT6323_ACCDET_CON4,
-		     ACCDET_CON4_PWM_THRESHOLD);
 
 	if (ret) {
 		dev_warn(accdet->dev, "failed to read key voltage: %d\n", ret);
