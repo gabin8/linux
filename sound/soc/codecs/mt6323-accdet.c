@@ -64,6 +64,13 @@
 /* Power down timeout for spurious wakeups */
 #define ACCDET_SHUTDOWN_MS		1000
 
+/*
+ * Headphones without a mic have no buttons to watch, and the mic-bias PWM is
+ * audible in them as a trill. Power down once the plug has settled (a slow
+ * insertion may still turn out to be a headset); the EINT catches the unplug.
+ */
+#define ACCDET_HEADPHONE_SHUTDOWN_MS	5000
+
 /* A plug being pushed in or wiggled breaks contact; confirm removals after this */
 #define ACCDET_UNPLUG_CONFIRM_US	50000
 
@@ -314,9 +321,6 @@ static void mt6323_accdet_sync(struct mt6323_accdet *accdet)
 		return;
 	}
 
-	/* Cancel the work to prevent shutdown */
-	cancel_delayed_work(&accdet->shutdown_work);
-
 	if (accdet->jack_type == SND_JACK_HEADSET) {
 		if (jack != ACCDET_HEADPHONE) {
 			accdet->btn_type = 0;
@@ -328,12 +332,16 @@ static void mt6323_accdet_sync(struct mt6323_accdet *accdet)
 						      msecs_to_jiffies(ACCDET_KEY_POLL_MS));
 		}
 	} else if (jack == ACCDET_HEADSET) {
+		/* Stay powered to see the buttons */
+		cancel_delayed_work(&accdet->shutdown_work);
 		accdet->jack_type = SND_JACK_HEADSET;
 		/* Set short debounce for key events */
 		regmap_write(accdet->regmap, MT6323_ACCDET_CON6,
 			     ACCDET_CON6_DEBOUNCE_BUTTON);
-	} else {
+	} else if (accdet->jack_type != SND_JACK_HEADPHONE) {
 		accdet->jack_type = SND_JACK_HEADPHONE;
+		mod_delayed_work(system_wq, &accdet->shutdown_work,
+				 msecs_to_jiffies(ACCDET_HEADPHONE_SHUTDOWN_MS));
 	}
 
 	mt6323_accdet_jack_report(accdet);
@@ -346,12 +354,12 @@ static void mt6323_accdet_shutdown_work(struct work_struct *work)
 
 	guard(mutex)(&accdet->lock);
 
-	/* Abort if already powered down */
-	if (accdet->jack_type || !accdet->powered)
+	/* Abort if already powered down, or a headset needs the buttons */
+	if (!accdet->powered || accdet->jack_type == SND_JACK_HEADSET)
 		return;
 
 	mt6323_accdet_sync(accdet);
-	if (accdet->jack_type)
+	if (accdet->jack_type == SND_JACK_HEADSET)
 		return;
 
 	mt6323_accdet_disable(accdet);
