@@ -3,7 +3,8 @@
  * MediaTek MT6572 AFE platform driver.
  *
  * DL1 playback front-end feeding the ADDA downlink SRC and the AFE<->PMIC
- * serial link to the mt6323 codec. The AFE registers are in the parent audsys
+ * serial link to the mt6323 codec, plus the CONSYS FM receiver's I2S input
+ * routed to the same downlink. The AFE registers are in the parent audsys
  * syscon; a fast_io regmap keeps the trigger and the period IRQ atomic.
  */
 
@@ -34,6 +35,7 @@
 #define AFE_DAC_CON0_DL1_OUT	BIT(10)
 #define AFE_DAC_CON1		0x0014
 #define AFE_DAC_CON1_DL1_RATE	GENMASK(3, 0)
+#define AFE_DAC_CON1_I2S_RATE	GENMASK(11, 8)	/* I2S-in ASRC output rate */
 #define AFE_DL1_BASE		0x0040
 #define AFE_DL1_CUR		0x0044
 #define AFE_DL1_END		0x0048		/* ring end, inclusive */
@@ -76,6 +78,68 @@
 #define AFE_ADDA_NEWIF_CFG1	0x013c
 #define AFE_ADDA_NEWIF_CFG1_VAL	0x03117180
 
+/*
+ * FM: CONSYS drives the AFE I2S input as master at 32 kHz. The I2S-in ASRC
+ * resamples it to FM_RATE; HW gain 2 (I00/I01 -> O15/O16, I12/I13 -> O3/O4)
+ * then carries it onto the DL1 outputs with its own volume. Values follow
+ * the stock audio HAL's FM path.
+ */
+#define AFE_I2S_CON		0x0018
+#define AFE_I2S_CON_PHASE_FIX	BIT(31)
+#define AFE_I2S_CON_FMT_I2S	BIT(3)
+#define AFE_I2S_CON_SLAVE	BIT(2)
+#define AFE_I2S_CON_EN		BIT(0)
+#define AFE_CONN4		0x0030
+#define AFE_CONN4_BYPASS_ASRC	BIT(30)
+#define AFE_GAIN2_CON0		0x0428
+#define AFE_GAIN2_CON0_RATE	GENMASK(7, 4)
+#define AFE_GAIN2_CON0_ON	BIT(0)
+#define AFE_GAIN2_CON1		0x042c		/* target gain, 0x80000 = 0 dB */
+#define AFE_GAIN2_CON1_GAIN	GENMASK(19, 0)
+#define AFE_GAIN2_CONN		0x0438
+#define AFE_GAIN2_CONN_I12_O03	BIT(8)
+#define AFE_GAIN2_CONN_I13_O04	BIT(10)
+#define AFE_GAIN2_CONN_I00_O15	BIT(16)
+#define AFE_GAIN2_CONN_I01_O16	BIT(23)
+#define AFE_GAIN2_CONN_FM	(AFE_GAIN2_CONN_I00_O15 | AFE_GAIN2_CONN_I01_O16 | \
+				 AFE_GAIN2_CONN_I12_O03 | AFE_GAIN2_CONN_I13_O04)
+#define AFE_GAIN2_CUR		0x043c		/* ramp start */
+#define AFE_ASRC_CON0		0x0500
+#define AFE_ASRC_CON0_I2S_STR	BIT(6)		/* I2S channel set start/clear */
+#define AFE_ASRC_CON0_ASM_ON	BIT(0)
+#define AFE_ASRC_CON13		0x0550
+#define AFE_ASRC_CON13_I2S_MONO	BIT(16)
+#define AFE_ASRC_CON14		0x0554		/* I2S Rx output-rate palette */
+#define AFE_ASRC_CON15		0x0558		/* I2S Rx input-rate palette */
+#define AFE_ASRC_CON16		0x055c		/* frequency calibrator 2 */
+#define AFE_ASRC_CON16_CYCLE	GENMASK(31, 16)
+#define AFE_ASRC_CON16_AUTORST	BIT(14)
+/* datasheet: AUTO_TUNE_FREQ4; in practice it retunes CON15, the input palette */
+#define AFE_ASRC_CON16_TUNE_IFS	BIT(12)
+#define AFE_ASRC_CON16_COMP	BIT(11)
+#define AFE_ASRC_CON16_SEL	GENMASK(9, 8)
+#define AFE_ASRC_CON16_BP_DGL	BIT(7)
+#define AFE_ASRC_CON16_RESTART	BIT(2)
+#define AFE_ASRC_CON16_FREQ_OUT	BIT(1)
+#define AFE_ASRC_CON16_EN	BIT(0)
+#define AFE_ASRC_CON17		0x0560		/* calibrator denominator */
+#define AFE_ASRC_CON20		0x056c		/* calibrator auto-reset bound */
+
+/* 32 kHz in -> 44.1 kHz out: palettes and denominator from the datasheet. */
+#define FM_RATE			44100
+#define FM_ASRC_OFS_44K		0xdc8000
+#define FM_ASRC_IFS_32K		0xa00000
+#define FM_ASRC_DENOM_44K	0x1fbd
+#define FM_ASRC_AUTORST_HI	0x1b00
+/* Calibrator 2 tracking the I2S-in rate (stock value 0x75987 without EN). */
+#define FM_ASRC_CALI		(FIELD_PREP(AFE_ASRC_CON16_CYCLE, 7) | \
+				 AFE_ASRC_CON16_AUTORST | AFE_ASRC_CON16_TUNE_IFS | \
+				 AFE_ASRC_CON16_COMP | FIELD_PREP(AFE_ASRC_CON16_SEL, 1) | \
+				 AFE_ASRC_CON16_BP_DGL | AFE_ASRC_CON16_RESTART | \
+				 AFE_ASRC_CON16_FREQ_OUT)
+#define FM_GAIN_MAX		0x80000		/* 0 dB */
+#define FM_GAIN_DEFAULT		0x10000		/* -18 dB, on top of "Playback Volume" */
+
 static const struct regmap_config mt6572_afe_regmap_config = {
 	.reg_bits = 32,
 	.reg_stride = 4,
@@ -90,6 +154,8 @@ struct mt6572_afe {
 	struct clk *clk;
 	struct snd_pcm_substream *dl1_substream;	/* active DL1 stream */
 	unsigned int dl_gain;				/* "Playback Volume" */
+	unsigned int fm_gain;				/* "FM Playback Volume" */
+	bool fm_on;					/* FM path owns the DL rate */
 };
 
 /* Hz -> AFE sample-rate code. */
@@ -181,6 +247,31 @@ static int mt6572_afe_pcm_hw_params(struct snd_soc_component *comp,
 	return 0;
 }
 
+/* ADDA downlink SRC + I2S out to the PMIC link, then the global AFE enable. */
+static void mt6572_afe_dl_start(struct mt6572_afe *afe, int rate_code,
+				int adda_code)
+{
+	u32 src = AFE_ADDA_DL_SRC2_CON0_BASE |
+		  FIELD_PREP(AFE_ADDA_DL_SRC2_CON0_RATE, adda_code) |
+		  AFE_ADDA_DL_SRC2_CON0_ON;
+
+	regmap_write(afe->regmap, AFE_ADDA_PREDIS_CON0, 0);
+	regmap_write(afe->regmap, AFE_ADDA_PREDIS_CON1, 0);
+
+	/* stock's interleaving */
+	regmap_write(afe->regmap, AFE_ADDA_DL_SRC2_CON0, src);
+	regmap_write(afe->regmap, AFE_ADDA_DL_SRC2_CON1,
+		     FIELD_PREP(AFE_ADDA_DL_SRC2_CON1_GAIN, afe->dl_gain));
+	regmap_write(afe->regmap, AFE_I2S_CON1,
+		     AFE_I2S_CON1_BASE | FIELD_PREP(AFE_I2S_CON1_RATE, rate_code));
+	regmap_write(afe->regmap, AFE_ADDA_DL_SRC2_CON0, src);
+	regmap_set_bits(afe->regmap, AFE_I2S_CON1, AFE_I2S_CON1_ON);
+	regmap_write(afe->regmap, AFE_ADDA_DL_SRC2_CON0, src);
+	regmap_set_bits(afe->regmap, AFE_ADDA_UL_DL_CON0, AFE_ADDA_UL_DL_CON0_ON);
+
+	regmap_set_bits(afe->regmap, AFE_DAC_CON0, AFE_DAC_CON0_AFE_ON);
+}
+
 static int mt6572_afe_pcm_prepare(struct snd_soc_component *comp,
 				  struct snd_pcm_substream *substream)
 {
@@ -191,6 +282,9 @@ static int mt6572_afe_pcm_prepare(struct snd_soc_component *comp,
 
 	if (adda_code < 0 || rate_code < 0)
 		return -EINVAL;
+	/* one downlink rate: FM holds it while its path is up */
+	if (afe->fm_on && runtime->rate != FM_RATE)
+		return -EBUSY;
 
 	/* IRQ1 rate + per-period frame count (enabled in the trigger) */
 	regmap_update_bits(afe->regmap, AFE_IRQ_MCU_CON, AFE_IRQ_MCU_CON_IRQ1_RATE,
@@ -202,31 +296,9 @@ static int mt6572_afe_pcm_prepare(struct snd_soc_component *comp,
 	regmap_set_bits(afe->regmap, AFE_CONN2, AFE_CONN2_DL1_O4);
 
 	regmap_set_bits(afe->regmap, AFE_DAC_CON0, AFE_DAC_CON0_DL1_OUT);
-	regmap_write(afe->regmap, AFE_ADDA_PREDIS_CON0, 0);
-	regmap_write(afe->regmap, AFE_ADDA_PREDIS_CON1, 0);
+	mt6572_afe_dl_start(afe, rate_code, adda_code);
 
-	/* ADDA downlink SRC + I2S, in stock's interleaving */
-	regmap_write(afe->regmap, AFE_ADDA_DL_SRC2_CON0,
-		     AFE_ADDA_DL_SRC2_CON0_BASE |
-		     FIELD_PREP(AFE_ADDA_DL_SRC2_CON0_RATE, adda_code) |
-		     AFE_ADDA_DL_SRC2_CON0_ON);
-	regmap_write(afe->regmap, AFE_ADDA_DL_SRC2_CON1,
-		     FIELD_PREP(AFE_ADDA_DL_SRC2_CON1_GAIN, afe->dl_gain));
-	regmap_write(afe->regmap, AFE_I2S_CON1,
-		     AFE_I2S_CON1_BASE | FIELD_PREP(AFE_I2S_CON1_RATE, rate_code));
-	regmap_write(afe->regmap, AFE_ADDA_DL_SRC2_CON0,
-		     AFE_ADDA_DL_SRC2_CON0_BASE |
-		     FIELD_PREP(AFE_ADDA_DL_SRC2_CON0_RATE, adda_code) |
-		     AFE_ADDA_DL_SRC2_CON0_ON);
-	regmap_set_bits(afe->regmap, AFE_I2S_CON1, AFE_I2S_CON1_ON);
-	regmap_write(afe->regmap, AFE_ADDA_DL_SRC2_CON0,
-		     AFE_ADDA_DL_SRC2_CON0_BASE |
-		     FIELD_PREP(AFE_ADDA_DL_SRC2_CON0_RATE, adda_code) |
-		     AFE_ADDA_DL_SRC2_CON0_ON);
-	regmap_set_bits(afe->regmap, AFE_ADDA_UL_DL_CON0, AFE_ADDA_UL_DL_CON0_ON);
-
-	/* global AFE on, then the DL1 memif rate */
-	regmap_set_bits(afe->regmap, AFE_DAC_CON0, AFE_DAC_CON0_AFE_ON);
+	/* the DL1 memif rate */
 	regmap_update_bits(afe->regmap, AFE_DAC_CON1, AFE_DAC_CON1_DL1_RATE,
 			   FIELD_PREP(AFE_DAC_CON1_DL1_RATE, rate_code));
 
@@ -315,16 +387,139 @@ static int mt6572_dl_gain_put(struct snd_kcontrol *kcontrol,
 	return 1;
 }
 
-/* DL digital gain, shadowed in afe->dl_gain so .prepare re-applies it. */
+/*
+ * FM path: the CONSYS FM receiver on the I2S input, resampled to FM_RATE and
+ * mixed onto the DL1 outputs through HW gain 2, so it reaches the codec through
+ * the DL1 DAI without a PCM stream. The receiver itself is driven over /dev/fm.
+ */
+static int mt6572_afe_fm_event(struct snd_soc_dapm_widget *w,
+			       struct snd_kcontrol *kcontrol, int event)
+{
+	struct snd_soc_component *comp = snd_soc_dapm_to_component(w->dapm);
+	struct mt6572_afe *afe = snd_soc_component_get_drvdata(comp);
+	struct snd_pcm_substream *dl1 = afe->dl1_substream;
+
+	switch (event) {
+	case SND_SOC_DAPM_PRE_PMU:
+		if (dl1 && dl1->runtime->rate != FM_RATE) {
+			dev_err(afe->dev, "FM needs the downlink at %u Hz, DL1 runs at %u Hz\n",
+				FM_RATE, dl1->runtime->rate);
+			return -EBUSY;
+		}
+		afe->fm_on = true;
+		mt6572_afe_dl_start(afe, mt6572_afe_rate_code(FM_RATE),
+				    mt6572_afe_adda_rate_code(FM_RATE));
+
+		/* HW gain 2 at FM_RATE, ramping up from silence */
+		regmap_set_bits(afe->regmap, AFE_GAIN2_CONN, AFE_GAIN2_CONN_FM);
+		regmap_update_bits(afe->regmap, AFE_GAIN2_CON0, AFE_GAIN2_CON0_RATE,
+				   FIELD_PREP(AFE_GAIN2_CON0_RATE,
+					      mt6572_afe_rate_code(FM_RATE)));
+		regmap_write(afe->regmap, AFE_GAIN2_CON1,
+			     FIELD_PREP(AFE_GAIN2_CON1_GAIN, afe->fm_gain));
+		regmap_write(afe->regmap, AFE_GAIN2_CUR, 0);
+		regmap_set_bits(afe->regmap, AFE_GAIN2_CON0, AFE_GAIN2_CON0_ON);
+
+		/* I2S in from CONSYS (pad select 0): slave, I2S format, 16-bit */
+		regmap_write(afe->regmap, AFE_I2S_CON, AFE_I2S_CON_PHASE_FIX |
+			     AFE_I2S_CON_FMT_I2S | AFE_I2S_CON_SLAVE);
+
+		/* ASRC: 32 kHz (tracked by calibrator 2) -> FM_RATE, stereo */
+		regmap_clear_bits(afe->regmap, AFE_CONN4, AFE_CONN4_BYPASS_ASRC);
+		regmap_update_bits(afe->regmap, AFE_DAC_CON1, AFE_DAC_CON1_I2S_RATE,
+				   FIELD_PREP(AFE_DAC_CON1_I2S_RATE,
+					      mt6572_afe_rate_code(FM_RATE)));
+		regmap_clear_bits(afe->regmap, AFE_ASRC_CON13, AFE_ASRC_CON13_I2S_MONO);
+		regmap_write(afe->regmap, AFE_ASRC_CON14, FM_ASRC_OFS_44K);
+		regmap_write(afe->regmap, AFE_ASRC_CON15, FM_ASRC_IFS_32K);
+		regmap_write(afe->regmap, AFE_ASRC_CON17, FM_ASRC_DENOM_44K);
+		regmap_write(afe->regmap, AFE_ASRC_CON16, FM_ASRC_CALI | AFE_ASRC_CON16_EN);
+		regmap_write(afe->regmap, AFE_ASRC_CON20, FM_ASRC_AUTORST_HI);
+		regmap_set_bits(afe->regmap, AFE_ASRC_CON0,
+				AFE_ASRC_CON0_I2S_STR | AFE_ASRC_CON0_ASM_ON);
+
+		regmap_set_bits(afe->regmap, AFE_I2S_CON, AFE_I2S_CON_EN);
+		return 0;
+	case SND_SOC_DAPM_POST_PMD:
+		regmap_clear_bits(afe->regmap, AFE_I2S_CON, AFE_I2S_CON_EN);
+		regmap_clear_bits(afe->regmap, AFE_ASRC_CON0,
+				  AFE_ASRC_CON0_ASM_ON | AFE_ASRC_CON0_I2S_STR);
+		regmap_clear_bits(afe->regmap, AFE_ASRC_CON16, AFE_ASRC_CON16_EN);
+		regmap_set_bits(afe->regmap, AFE_CONN4, AFE_CONN4_BYPASS_ASRC);
+		regmap_clear_bits(afe->regmap, AFE_GAIN2_CON0, AFE_GAIN2_CON0_ON);
+		regmap_clear_bits(afe->regmap, AFE_GAIN2_CONN, AFE_GAIN2_CONN_FM);
+		afe->fm_on = false;
+		return 0;
+	default:
+		return 0;
+	}
+}
+
+static const struct snd_kcontrol_new mt6572_afe_fm_switch =
+	SOC_DAPM_SINGLE_VIRT("Switch", 1);
+
+static const struct snd_soc_dapm_widget mt6572_afe_widgets[] = {
+	SND_SOC_DAPM_INPUT("FM I2S In"),
+	SND_SOC_DAPM_SWITCH_E("FM Playback", SND_SOC_NOPM, 0, 0,
+			      &mt6572_afe_fm_switch, mt6572_afe_fm_event,
+			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+};
+
+static const struct snd_soc_dapm_route mt6572_afe_routes[] = {
+	{ "FM Playback", "Switch", "FM I2S In" },
+	{ "DL1 Playback", NULL, "FM Playback" },
+};
+
+static const DECLARE_TLV_DB_LINEAR(fm_gain_tlv, TLV_DB_GAIN_MUTE, 0);
+
+static int mt6572_fm_gain_get(struct snd_kcontrol *kcontrol,
+			      struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *comp = snd_kcontrol_chip(kcontrol);
+	struct mt6572_afe *afe = snd_soc_component_get_drvdata(comp);
+
+	ucontrol->value.integer.value[0] = afe->fm_gain;
+	return 0;
+}
+
+static int mt6572_fm_gain_put(struct snd_kcontrol *kcontrol,
+			      struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *comp = snd_kcontrol_chip(kcontrol);
+	struct mt6572_afe *afe = snd_soc_component_get_drvdata(comp);
+	unsigned int gain = ucontrol->value.integer.value[0];
+
+	if (gain > FM_GAIN_MAX)
+		return -EINVAL;
+	if (gain == afe->fm_gain)
+		return 0;
+
+	afe->fm_gain = gain;
+	/* the gain block ramps to the new target on its own */
+	regmap_write(afe->regmap, AFE_GAIN2_CON1,
+		     FIELD_PREP(AFE_GAIN2_CON1_GAIN, gain));
+	return 1;
+}
+
+/*
+ * DL digital gain (DL1 and FM), shadowed in afe->dl_gain so .prepare re-applies
+ * it; FM's own HW-gain target in front of it.
+ */
 static const struct snd_kcontrol_new mt6572_afe_controls[] = {
 	SOC_SINGLE_EXT_TLV("Playback Volume", SND_SOC_NOPM, 0, 0xffff, 0,
 			   mt6572_dl_gain_get, mt6572_dl_gain_put, dl_gain_tlv),
+	SOC_SINGLE_EXT_TLV("FM Playback Volume", SND_SOC_NOPM, 0, FM_GAIN_MAX, 0,
+			   mt6572_fm_gain_get, mt6572_fm_gain_put, fm_gain_tlv),
 };
 
 static const struct snd_soc_component_driver mt6572_afe_component = {
 	.name = "mt6572-afe-pcm",
 	.controls = mt6572_afe_controls,
 	.num_controls = ARRAY_SIZE(mt6572_afe_controls),
+	.dapm_widgets = mt6572_afe_widgets,
+	.num_dapm_widgets = ARRAY_SIZE(mt6572_afe_widgets),
+	.dapm_routes = mt6572_afe_routes,
+	.num_dapm_routes = ARRAY_SIZE(mt6572_afe_routes),
 	.open = mt6572_afe_pcm_open,
 	.hw_params = mt6572_afe_pcm_hw_params,
 	.prepare = mt6572_afe_pcm_prepare,
@@ -366,6 +561,7 @@ static int mt6572_afe_pcm_dev_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	afe->dev = dev;
 	afe->dl_gain = AFE_DL_GAIN_DEFAULT;
+	afe->fm_gain = FM_GAIN_DEFAULT;
 	platform_set_drvdata(pdev, afe);
 
 	ret = dma_coerce_mask_and_coherent(dev, DMA_BIT_MASK(32));
