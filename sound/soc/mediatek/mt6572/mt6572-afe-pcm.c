@@ -3,9 +3,10 @@
  * MediaTek MT6572 AFE platform driver.
  *
  * DL1 playback front-end feeding the ADDA downlink SRC and the AFE<->PMIC
- * serial link to the mt6323 codec, plus the CONSYS FM receiver's I2S input
- * routed to the same downlink. The AFE registers are in the parent audsys
- * syscon; a fast_io regmap keeps the trigger and the period IRQ atomic.
+ * serial link to the mt6323 codec, plus the CONSYS FM receiver's I2S input,
+ * routed to the same downlink and captured through the AWB memif. The AFE
+ * registers are in the parent audsys syscon; a fast_io regmap keeps the
+ * triggers and the period IRQs atomic.
  */
 
 #include <linux/bitfield.h>
@@ -32,26 +33,36 @@
 #define AFE_DAC_CON0		0x0010
 #define AFE_DAC_CON0_AFE_ON	BIT(0)
 #define AFE_DAC_CON0_DL1_ON	BIT(1)
+#define AFE_DAC_CON0_AWB_ON	BIT(6)
 #define AFE_DAC_CON0_DL1_OUT	BIT(10)
 #define AFE_DAC_CON1		0x0014
 #define AFE_DAC_CON1_DL1_RATE	GENMASK(3, 0)
 #define AFE_DAC_CON1_I2S_RATE	GENMASK(11, 8)	/* I2S-in ASRC output rate */
+#define AFE_DAC_CON1_AWB_RATE	GENMASK(15, 12)
+#define AFE_DAC_CON1_AWB_MONO	BIT(24)
 #define AFE_DL1_BASE		0x0040
 #define AFE_DL1_CUR		0x0044
 #define AFE_DL1_END		0x0048		/* ring end, inclusive */
+#define AFE_AWB_BASE		0x0070
+#define AFE_AWB_END		0x0078		/* ring end, inclusive */
+#define AFE_AWB_CUR		0x007c
 #define AFE_MEMIF_MAXLEN	0x03d4
 #define AFE_MEMIF_MAXLEN_DL1	GENMASK(3, 0)
 #define AFE_MEMIF_PBUF_SIZE	0x03d8
 #define AFE_MEMIF_PBUF_SIZE_DL1	GENMASK(17, 16)
 #define AFE_IRQ_MCU_CON		0x03a0
 #define AFE_IRQ_MCU_CON_IRQ1_ON		BIT(0)
+#define AFE_IRQ_MCU_CON_IRQ2_ON		BIT(1)
 #define AFE_IRQ_MCU_CON_IRQ1_RATE	GENMASK(7, 4)
+#define AFE_IRQ_MCU_CON_IRQ2_RATE	GENMASK(11, 8)
 #define AFE_IRQ_MCU_STATUS	0x03a4
 #define AFE_IRQ_MCU_STATUS_IRQ1	BIT(0)
+#define AFE_IRQ_MCU_STATUS_IRQ2	BIT(1)
 #define AFE_IRQ_MCU_STATUS_MASK	GENMASK(3, 0)
 #define AFE_IRQ_MCU_CLR		0x03a8
 #define AFE_IRQ_MCU_CLR_NOSTATUS (BIT(6) | BIT(1) | BIT(0))	/* ack when STATUS=0 */
 #define AFE_IRQ_MCU_CNT1	0x03ac
+#define AFE_IRQ_MCU_CNT2	0x03b0
 
 /* DL1 -> interconnect -> ADDA downlink SRC -> AFE<->PMIC link. */
 #define AFE_I2S_CON1		0x0034
@@ -62,6 +73,8 @@
 #define AFE_CONN1_DL1_O3	BIT(21)		/* DL1 ch1 -> O3 */
 #define AFE_CONN2		0x0028
 #define AFE_CONN2_DL1_O4	BIT(6)		/* DL1 ch2 -> O4 */
+#define AFE_CONN2_I2S_IN_O05	BIT(16)		/* I2S-in L (I00) -> AWB L (O05) */
+#define AFE_CONN2_I2S_IN_O06	BIT(22)		/* I2S-in R (I01) -> AWB R (O06) */
 #define AFE_ADDA_DL_SRC2_CON0	0x0108
 #define AFE_ADDA_DL_SRC2_CON0_BASE 0x03001802	/* SRC-disabled base */
 #define AFE_ADDA_DL_SRC2_CON0_RATE GENMASK(31, 28)
@@ -153,6 +166,7 @@ struct mt6572_afe {
 	struct regmap *regmap;
 	struct clk *clk;
 	struct snd_pcm_substream *dl1_substream;	/* active DL1 stream */
+	struct snd_pcm_substream *awb_substream;	/* active AWB stream */
 	unsigned int dl_gain;				/* "Playback Volume" */
 	unsigned int fm_gain;				/* "FM Playback Volume" */
 	bool fm_on;					/* FM path owns the DL rate */
@@ -192,14 +206,32 @@ static int mt6572_afe_adda_rate_code(unsigned int rate)
 	}
 }
 
+enum {
+	MT6572_AFE_DAI_DL1,
+	MT6572_AFE_DAI_AWB,
+};
+
 static struct snd_soc_dai_driver mt6572_afe_dais[] = {
 	{
 		.name = "mt6572-afe-dl1",
+		.id = MT6572_AFE_DAI_DL1,
 		.playback = {
 			.stream_name = "DL1 Playback",
 			.channels_min = 1,
 			.channels_max = 2,
 			.rates = SNDRV_PCM_RATE_8000_48000,
+			.formats = SNDRV_PCM_FMTBIT_S16_LE,
+		},
+	},
+	{
+		/* the FM stream after the I2S-in ASRC, so FM_RATE only */
+		.name = "mt6572-afe-awb",
+		.id = MT6572_AFE_DAI_AWB,
+		.capture = {
+			.stream_name = "AWB Capture",
+			.channels_min = 2,
+			.channels_max = 2,
+			.rates = SNDRV_PCM_RATE_44100,
 			.formats = SNDRV_PCM_FMTBIT_S16_LE,
 		},
 	},
@@ -221,11 +253,34 @@ static const struct snd_pcm_hardware mt6572_afe_hardware = {
 	.buffer_bytes_max = 16 * 1024,		/* AFE on-chip SRAM */
 };
 
+/* AWB capture: a DRAM ring, leaving the on-chip SRAM to DL1 */
+static const struct snd_pcm_hardware mt6572_afe_awb_hardware = {
+	.info = SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID |
+		SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_BLOCK_TRANSFER,
+	.formats = SNDRV_PCM_FMTBIT_S16_LE,
+	.rates = SNDRV_PCM_RATE_44100,
+	.rate_min = FM_RATE,
+	.rate_max = FM_RATE,
+	.channels_min = 2,
+	.channels_max = 2,
+	.period_bytes_min = 1024,
+	.period_bytes_max = 32 * 1024,
+	.periods_min = 2,
+	.periods_max = 32,
+	.buffer_bytes_max = 128 * 1024,
+};
+
+static bool mt6572_afe_is_awb(struct snd_pcm_substream *substream)
+{
+	return substream->stream == SNDRV_PCM_STREAM_CAPTURE;
+}
+
 static int mt6572_afe_pcm_open(struct snd_soc_component *comp,
 			       struct snd_pcm_substream *substream)
 {
-	snd_soc_set_runtime_hwparams(substream, &mt6572_afe_hardware);
-	/* AFE_DL1_END[2:0] must be 7: keep the period (so the buffer) 8-byte aligned. */
+	snd_soc_set_runtime_hwparams(substream, mt6572_afe_is_awb(substream) ?
+				     &mt6572_afe_awb_hardware : &mt6572_afe_hardware);
+	/* memif END[2:0] must be 7: keep the period (so the buffer) 8-byte aligned. */
 	return snd_pcm_hw_constraint_step(substream->runtime, 0,
 					  SNDRV_PCM_HW_PARAM_PERIOD_BYTES, 8);
 }
@@ -238,6 +293,12 @@ static int mt6572_afe_pcm_hw_params(struct snd_soc_component *comp,
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	unsigned int bytes = params_buffer_bytes(params);
 	u32 base = lower_32_bits(runtime->dma_addr);
+
+	if (mt6572_afe_is_awb(substream)) {
+		regmap_write(afe->regmap, AFE_AWB_BASE, base);
+		regmap_write(afe->regmap, AFE_AWB_END, base + bytes - 1);
+		return 0;
+	}
 
 	/* program the DL1 memif DMA ring (in the AFE on-chip SRAM) */
 	regmap_write(afe->regmap, AFE_DL1_BASE, base);
@@ -272,6 +333,27 @@ static void mt6572_afe_dl_start(struct mt6572_afe *afe, int rate_code,
 	regmap_set_bits(afe->regmap, AFE_DAC_CON0, AFE_DAC_CON0_AFE_ON);
 }
 
+/* AWB: IRQ2 paces its periods (DL1 keeps IRQ1); fed from the I2S input. */
+static int mt6572_afe_awb_prepare(struct mt6572_afe *afe,
+				  struct snd_pcm_runtime *runtime)
+{
+	int rate_code = mt6572_afe_rate_code(runtime->rate);
+
+	if (rate_code < 0)
+		return -EINVAL;
+
+	regmap_update_bits(afe->regmap, AFE_IRQ_MCU_CON, AFE_IRQ_MCU_CON_IRQ2_RATE,
+			   FIELD_PREP(AFE_IRQ_MCU_CON_IRQ2_RATE, rate_code));
+	regmap_write(afe->regmap, AFE_IRQ_MCU_CNT2, runtime->period_size);
+	regmap_update_bits(afe->regmap, AFE_DAC_CON1,
+			   AFE_DAC_CON1_AWB_RATE | AFE_DAC_CON1_AWB_MONO,
+			   FIELD_PREP(AFE_DAC_CON1_AWB_RATE, rate_code));
+	regmap_set_bits(afe->regmap, AFE_CONN2,
+			AFE_CONN2_I2S_IN_O05 | AFE_CONN2_I2S_IN_O06);
+	regmap_set_bits(afe->regmap, AFE_DAC_CON0, AFE_DAC_CON0_AFE_ON);
+	return 0;
+}
+
 static int mt6572_afe_pcm_prepare(struct snd_soc_component *comp,
 				  struct snd_pcm_substream *substream)
 {
@@ -279,6 +361,9 @@ static int mt6572_afe_pcm_prepare(struct snd_soc_component *comp,
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int adda_code = mt6572_afe_adda_rate_code(runtime->rate);
 	int rate_code = mt6572_afe_rate_code(runtime->rate);
+
+	if (mt6572_afe_is_awb(substream))
+		return mt6572_afe_awb_prepare(afe, runtime);
 
 	if (adda_code < 0 || rate_code < 0)
 		return -EINVAL;
@@ -305,10 +390,47 @@ static int mt6572_afe_pcm_prepare(struct snd_soc_component *comp,
 	return 0;
 }
 
+static int mt6572_afe_pcm_hw_free(struct snd_soc_component *comp,
+				  struct snd_pcm_substream *substream)
+{
+	struct mt6572_afe *afe = snd_soc_component_get_drvdata(comp);
+
+	if (mt6572_afe_is_awb(substream))
+		regmap_clear_bits(afe->regmap, AFE_CONN2,
+				  AFE_CONN2_I2S_IN_O05 | AFE_CONN2_I2S_IN_O06);
+	return 0;
+}
+
+static int mt6572_afe_awb_trigger(struct mt6572_afe *afe,
+				  struct snd_pcm_substream *substream, int cmd)
+{
+	switch (cmd) {
+	case SNDRV_PCM_TRIGGER_START:
+	case SNDRV_PCM_TRIGGER_RESUME:
+	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+		afe->awb_substream = substream;
+		regmap_set_bits(afe->regmap, AFE_IRQ_MCU_CON, AFE_IRQ_MCU_CON_IRQ2_ON);
+		regmap_set_bits(afe->regmap, AFE_DAC_CON0, AFE_DAC_CON0_AWB_ON);
+		return 0;
+	case SNDRV_PCM_TRIGGER_STOP:
+	case SNDRV_PCM_TRIGGER_SUSPEND:
+	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+		regmap_clear_bits(afe->regmap, AFE_DAC_CON0, AFE_DAC_CON0_AWB_ON);
+		regmap_clear_bits(afe->regmap, AFE_IRQ_MCU_CON, AFE_IRQ_MCU_CON_IRQ2_ON);
+		afe->awb_substream = NULL;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
 static int mt6572_afe_pcm_trigger(struct snd_soc_component *comp,
 				  struct snd_pcm_substream *substream, int cmd)
 {
 	struct mt6572_afe *afe = snd_soc_component_get_drvdata(comp);
+
+	if (mt6572_afe_is_awb(substream))
+		return mt6572_afe_awb_trigger(afe, substream, cmd);
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
@@ -340,7 +462,8 @@ static snd_pcm_uframes_t mt6572_afe_pcm_pointer(struct snd_soc_component *comp,
 	u32 base = lower_32_bits(runtime->dma_addr);
 	unsigned int cur = 0;
 
-	regmap_read(afe->regmap, AFE_DL1_CUR, &cur);
+	regmap_read(afe->regmap, mt6572_afe_is_awb(substream) ? AFE_AWB_CUR : AFE_DL1_CUR,
+		    &cur);
 	if (cur < base || cur >= base + runtime->dma_bytes)
 		return 0;
 	return bytes_to_frames(runtime, cur - base);
@@ -350,6 +473,12 @@ static int mt6572_afe_pcm_new(struct snd_soc_component *comp,
 				    struct snd_soc_pcm_runtime *rtd)
 {
 	size_t size = mt6572_afe_hardware.buffer_bytes_max;
+
+	if (snd_soc_rtd_to_cpu(rtd, 0)->id == MT6572_AFE_DAI_AWB) {
+		snd_pcm_set_managed_buffer_all(rtd->pcm, SNDRV_DMA_TYPE_DEV, comp->dev, 0,
+					       mt6572_afe_awb_hardware.buffer_bytes_max);
+		return 0;
+	}
 
 	snd_pcm_set_managed_buffer_all(rtd->pcm, SNDRV_DMA_TYPE_DEV_IRAM, comp->dev,
 				       size, size);
@@ -388,8 +517,9 @@ static int mt6572_dl_gain_put(struct snd_kcontrol *kcontrol,
 }
 
 /*
- * FM receive side: the CONSYS FM receiver on the I2S input, resampled to
- * FM_RATE. The receiver itself is driven over /dev/fm.
+ * FM receive side, shared by playback and capture: the CONSYS FM receiver on
+ * the I2S input, resampled to FM_RATE. The receiver itself is driven over
+ * /dev/fm.
  */
 static int mt6572_afe_fm_rx_event(struct snd_soc_dapm_widget *w,
 				  struct snd_kcontrol *kcontrol, int event)
@@ -489,6 +619,9 @@ static const struct snd_soc_dapm_route mt6572_afe_routes[] = {
 	{ "FM Playback", "Switch", "FM I2S In" },
 	{ "FM Playback", NULL, "FM I2S Rx" },
 	{ "DL1 Playback", NULL, "FM Playback" },
+	/* the AWB memif records the FM stream, listened to or not */
+	{ "AWB Capture", NULL, "FM I2S In" },
+	{ "AWB Capture", NULL, "FM I2S Rx" },
 };
 
 static const DECLARE_TLV_DB_LINEAR(fm_gain_tlv, TLV_DB_GAIN_MUTE, 0);
@@ -544,12 +677,13 @@ static const struct snd_soc_component_driver mt6572_afe_component = {
 	.open = mt6572_afe_pcm_open,
 	.hw_params = mt6572_afe_pcm_hw_params,
 	.prepare = mt6572_afe_pcm_prepare,
+	.hw_free = mt6572_afe_pcm_hw_free,
 	.trigger = mt6572_afe_pcm_trigger,
 	.pointer = mt6572_afe_pcm_pointer,
 	.pcm_new = mt6572_afe_pcm_new,
 };
 
-/* IRQ1 marks a DL1 period; hardirq (fast_io regmap, atomic PCM). Active-low. */
+/* IRQ1 marks a DL1 period, IRQ2 an AWB one; hardirq (fast_io regmap, atomic PCM). Active-low. */
 static irqreturn_t mt6572_afe_irq(int irq, void *dev_id)
 {
 	struct mt6572_afe *afe = dev_id;
@@ -564,6 +698,8 @@ static irqreturn_t mt6572_afe_irq(int irq, void *dev_id)
 
 	if ((status & AFE_IRQ_MCU_STATUS_IRQ1) && afe->dl1_substream)
 		snd_pcm_period_elapsed(afe->dl1_substream);
+	if ((status & AFE_IRQ_MCU_STATUS_IRQ2) && afe->awb_substream)
+		snd_pcm_period_elapsed(afe->awb_substream);
 
 	regmap_write(afe->regmap, AFE_IRQ_MCU_CLR, status);
 	return IRQ_HANDLED;

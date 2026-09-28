@@ -4,7 +4,8 @@
  *
  * Machine driver binding the MT6572 AFE platform (DL1 playback) to the MT6323
  * PMIC analog codec, with headphone-jack detection that auto-routes between the
- * speaker and the headphones, and an optional external speaker amplifier.
+ * speaker and the headphones, and an optional external speaker amplifier. The
+ * AFE's AWB capture (the FM receiver's stream) has no codec behind it.
  * Modelled on the mt8183-mt6358 PMIC-codec card.
  */
 
@@ -29,11 +30,22 @@ SND_SOC_DAILINK_DEFS(playback,
 	DAILINK_COMP_ARRAY(COMP_CODEC("mt6323-sound", "mt6323-snd-codec-aif1")),
 	DAILINK_COMP_ARRAY(COMP_EMPTY()));
 
+SND_SOC_DAILINK_DEFS(awb,
+	DAILINK_COMP_ARRAY(COMP_CPU("mt6572-afe-awb")),
+	DAILINK_COMP_ARRAY(COMP_DUMMY()),
+	DAILINK_COMP_ARRAY(COMP_EMPTY()));
+
 static struct snd_soc_dai_link mt6572_mt6323_dai_links[] = {
 	{
 		.name = "DL1",
 		.stream_name = "DL1 Playback",
 		SND_SOC_DAILINK_REG(playback),
+	},
+	{
+		.name = "AWB",
+		.stream_name = "AWB Capture",
+		.capture_only = 1,
+		SND_SOC_DAILINK_REG(awb),
 	},
 };
 
