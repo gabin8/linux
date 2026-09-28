@@ -388,9 +388,52 @@ static int mt6572_dl_gain_put(struct snd_kcontrol *kcontrol,
 }
 
 /*
- * FM path: the CONSYS FM receiver on the I2S input, resampled to FM_RATE and
- * mixed onto the DL1 outputs through HW gain 2, so it reaches the codec through
- * the DL1 DAI without a PCM stream. The receiver itself is driven over /dev/fm.
+ * FM receive side: the CONSYS FM receiver on the I2S input, resampled to
+ * FM_RATE. The receiver itself is driven over /dev/fm.
+ */
+static int mt6572_afe_fm_rx_event(struct snd_soc_dapm_widget *w,
+				  struct snd_kcontrol *kcontrol, int event)
+{
+	struct snd_soc_component *comp = snd_soc_dapm_to_component(w->dapm);
+	struct mt6572_afe *afe = snd_soc_component_get_drvdata(comp);
+
+	switch (event) {
+	case SND_SOC_DAPM_PRE_PMU:
+		/* I2S in from CONSYS (pad select 0): slave, I2S format, 16-bit */
+		regmap_write(afe->regmap, AFE_I2S_CON, AFE_I2S_CON_PHASE_FIX |
+			     AFE_I2S_CON_FMT_I2S | AFE_I2S_CON_SLAVE);
+
+		/* ASRC: 32 kHz (tracked by calibrator 2) -> FM_RATE, stereo */
+		regmap_clear_bits(afe->regmap, AFE_CONN4, AFE_CONN4_BYPASS_ASRC);
+		regmap_update_bits(afe->regmap, AFE_DAC_CON1, AFE_DAC_CON1_I2S_RATE,
+				   FIELD_PREP(AFE_DAC_CON1_I2S_RATE,
+					      mt6572_afe_rate_code(FM_RATE)));
+		regmap_clear_bits(afe->regmap, AFE_ASRC_CON13, AFE_ASRC_CON13_I2S_MONO);
+		regmap_write(afe->regmap, AFE_ASRC_CON14, FM_ASRC_OFS_44K);
+		regmap_write(afe->regmap, AFE_ASRC_CON15, FM_ASRC_IFS_32K);
+		regmap_write(afe->regmap, AFE_ASRC_CON17, FM_ASRC_DENOM_44K);
+		regmap_write(afe->regmap, AFE_ASRC_CON16, FM_ASRC_CALI | AFE_ASRC_CON16_EN);
+		regmap_write(afe->regmap, AFE_ASRC_CON20, FM_ASRC_AUTORST_HI);
+		regmap_set_bits(afe->regmap, AFE_ASRC_CON0,
+				AFE_ASRC_CON0_I2S_STR | AFE_ASRC_CON0_ASM_ON);
+
+		regmap_set_bits(afe->regmap, AFE_I2S_CON, AFE_I2S_CON_EN);
+		return 0;
+	case SND_SOC_DAPM_POST_PMD:
+		regmap_clear_bits(afe->regmap, AFE_I2S_CON, AFE_I2S_CON_EN);
+		regmap_clear_bits(afe->regmap, AFE_ASRC_CON0,
+				  AFE_ASRC_CON0_ASM_ON | AFE_ASRC_CON0_I2S_STR);
+		regmap_clear_bits(afe->regmap, AFE_ASRC_CON16, AFE_ASRC_CON16_EN);
+		regmap_set_bits(afe->regmap, AFE_CONN4, AFE_CONN4_BYPASS_ASRC);
+		return 0;
+	default:
+		return 0;
+	}
+}
+
+/*
+ * FM playback: the FM stream mixed onto the DL1 outputs through HW gain 2, so
+ * it reaches the codec through the DL1 DAI without a PCM stream.
  */
 static int mt6572_afe_fm_event(struct snd_soc_dapm_widget *w,
 			       struct snd_kcontrol *kcontrol, int event)
@@ -419,33 +462,8 @@ static int mt6572_afe_fm_event(struct snd_soc_dapm_widget *w,
 			     FIELD_PREP(AFE_GAIN2_CON1_GAIN, afe->fm_gain));
 		regmap_write(afe->regmap, AFE_GAIN2_CUR, 0);
 		regmap_set_bits(afe->regmap, AFE_GAIN2_CON0, AFE_GAIN2_CON0_ON);
-
-		/* I2S in from CONSYS (pad select 0): slave, I2S format, 16-bit */
-		regmap_write(afe->regmap, AFE_I2S_CON, AFE_I2S_CON_PHASE_FIX |
-			     AFE_I2S_CON_FMT_I2S | AFE_I2S_CON_SLAVE);
-
-		/* ASRC: 32 kHz (tracked by calibrator 2) -> FM_RATE, stereo */
-		regmap_clear_bits(afe->regmap, AFE_CONN4, AFE_CONN4_BYPASS_ASRC);
-		regmap_update_bits(afe->regmap, AFE_DAC_CON1, AFE_DAC_CON1_I2S_RATE,
-				   FIELD_PREP(AFE_DAC_CON1_I2S_RATE,
-					      mt6572_afe_rate_code(FM_RATE)));
-		regmap_clear_bits(afe->regmap, AFE_ASRC_CON13, AFE_ASRC_CON13_I2S_MONO);
-		regmap_write(afe->regmap, AFE_ASRC_CON14, FM_ASRC_OFS_44K);
-		regmap_write(afe->regmap, AFE_ASRC_CON15, FM_ASRC_IFS_32K);
-		regmap_write(afe->regmap, AFE_ASRC_CON17, FM_ASRC_DENOM_44K);
-		regmap_write(afe->regmap, AFE_ASRC_CON16, FM_ASRC_CALI | AFE_ASRC_CON16_EN);
-		regmap_write(afe->regmap, AFE_ASRC_CON20, FM_ASRC_AUTORST_HI);
-		regmap_set_bits(afe->regmap, AFE_ASRC_CON0,
-				AFE_ASRC_CON0_I2S_STR | AFE_ASRC_CON0_ASM_ON);
-
-		regmap_set_bits(afe->regmap, AFE_I2S_CON, AFE_I2S_CON_EN);
 		return 0;
 	case SND_SOC_DAPM_POST_PMD:
-		regmap_clear_bits(afe->regmap, AFE_I2S_CON, AFE_I2S_CON_EN);
-		regmap_clear_bits(afe->regmap, AFE_ASRC_CON0,
-				  AFE_ASRC_CON0_ASM_ON | AFE_ASRC_CON0_I2S_STR);
-		regmap_clear_bits(afe->regmap, AFE_ASRC_CON16, AFE_ASRC_CON16_EN);
-		regmap_set_bits(afe->regmap, AFE_CONN4, AFE_CONN4_BYPASS_ASRC);
 		regmap_clear_bits(afe->regmap, AFE_GAIN2_CON0, AFE_GAIN2_CON0_ON);
 		regmap_clear_bits(afe->regmap, AFE_GAIN2_CONN, AFE_GAIN2_CONN_FM);
 		afe->fm_on = false;
@@ -460,6 +478,8 @@ static const struct snd_kcontrol_new mt6572_afe_fm_switch =
 
 static const struct snd_soc_dapm_widget mt6572_afe_widgets[] = {
 	SND_SOC_DAPM_INPUT("FM I2S In"),
+	SND_SOC_DAPM_SUPPLY("FM I2S Rx", SND_SOC_NOPM, 0, 0, mt6572_afe_fm_rx_event,
+			    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
 	SND_SOC_DAPM_SWITCH_E("FM Playback", SND_SOC_NOPM, 0, 0,
 			      &mt6572_afe_fm_switch, mt6572_afe_fm_event,
 			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
@@ -467,6 +487,7 @@ static const struct snd_soc_dapm_widget mt6572_afe_widgets[] = {
 
 static const struct snd_soc_dapm_route mt6572_afe_routes[] = {
 	{ "FM Playback", "Switch", "FM I2S In" },
+	{ "FM Playback", NULL, "FM I2S Rx" },
 	{ "DL1 Playback", NULL, "FM Playback" },
 };
 
