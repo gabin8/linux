@@ -48,8 +48,7 @@
 
 #define ACCDET_CON4_PWM_THRESHOLD	REGISTER_VAL(0x400)
 
-#define ACCDET_CON5_FALL_DELAY		GENMASK(16, 15)
-#define ACCDET_CON5_FALL_DELAY_DEFAULT	1
+#define ACCDET_CON5_FALL_DELAY		BIT(15)
 #define ACCDET_CON5_RISE_DELAY		GENMASK(14, 0)
 #define ACCDET_CON5_RISE_DELAY_DEFAULT	0x03f0
 
@@ -285,15 +284,10 @@ static int mt6323_accdet_init(struct mt6323_accdet *accdet) {
 		return ret;
 
 	/* setup delay */
-	ret = regmap_set_bits(map, MT6323_ACCDET_CON5,
-	                      FIELD_PREP(ACCDET_CON5_FALL_DELAY,
-	                                 ACCDET_CON5_FALL_DELAY_DEFAULT));
-	if (ret)
-		return ret;
-
-	ret = regmap_set_bits(map, MT6323_ACCDET_CON5,
-	                      FIELD_PREP(ACCDET_CON5_RISE_DELAY,
-	                                 ACCDET_CON5_RISE_DELAY_DEFAULT));
+	ret = regmap_write(map, MT6323_ACCDET_CON5,
+			   ACCDET_CON5_FALL_DELAY |
+			   FIELD_PREP(ACCDET_CON5_RISE_DELAY,
+				      ACCDET_CON5_RISE_DELAY_DEFAULT));
 	if (ret)
 		return ret;
 
