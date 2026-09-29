@@ -25,6 +25,14 @@ static const struct snd_soc_dapm_widget mt6572_mt6323_widgets[] = {
 	SND_SOC_DAPM_SPK("Earpiece", NULL),
 };
 
+/*
+ * Lets userspace keep the speaker on with the headphones in; each jack event
+ * re-applies the automatic route. The codec provides the Headphone switch.
+ */
+static const struct snd_kcontrol_new mt6572_mt6323_controls[] = {
+	SOC_DAPM_PIN_SWITCH("Speaker"),
+};
+
 SND_SOC_DAILINK_DEFS(playback,
 	DAILINK_COMP_ARRAY(COMP_CPU("mt6572-afe-dl1")),
 	DAILINK_COMP_ARRAY(COMP_CODEC("mt6323-sound", "mt6323-snd-codec-aif1")),
@@ -107,6 +115,8 @@ static struct snd_soc_card mt6572_mt6323_card = {
 	.owner = THIS_MODULE,
 	.dai_link = mt6572_mt6323_dai_links,
 	.num_links = ARRAY_SIZE(mt6572_mt6323_dai_links),
+	.controls = mt6572_mt6323_controls,
+	.num_controls = ARRAY_SIZE(mt6572_mt6323_controls),
 	.dapm_widgets = mt6572_mt6323_widgets,
 	.num_dapm_widgets = ARRAY_SIZE(mt6572_mt6323_widgets),
 };
