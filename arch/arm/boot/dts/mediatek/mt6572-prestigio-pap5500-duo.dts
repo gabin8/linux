@@ -232,6 +232,12 @@
 };
 
 &consys {
+	/* GPIO138 enables the external GPS LNA while GPS is on */
+	pinctrl-names = "gps_lna_state_init", "gps_lna_state_oh",
+			"gps_lna_state_ol";
+	pinctrl-0 = <&gps_lna_off_pins>;
+	pinctrl-1 = <&gps_lna_on_pins>;
+	pinctrl-2 = <&gps_lna_off_pins>;
 	vcn18-supply = <&mt6323_vcn18_reg>;
 	vcn28-supply = <&mt6323_vcn28_reg>;
 	vcn33_bt-supply = <&mt6323_vcn33_bt_reg>;
@@ -361,6 +367,20 @@
 	bl_pwm_pins: bl-pwm-pins {
 		pins {
 			pinmux = <PINMUX_GPIO30__FUNC_PWM2>;
+		};
+	};
+
+	gps_lna_off_pins: gps-lna-off-pins {
+		pins {
+			pinmux = <PINMUX_GPIO138__FUNC_GPIO138>;
+			output-low;
+		};
+	};
+
+	gps_lna_on_pins: gps-lna-on-pins {
+		pins {
+			pinmux = <PINMUX_GPIO138__FUNC_GPIO138>;
+			output-high;
 		};
 	};
 
