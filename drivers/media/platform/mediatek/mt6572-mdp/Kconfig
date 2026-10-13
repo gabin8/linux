@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config VIDEO_MEDIATEK_MDP_MT6572
+	tristate "MediaTek MT6572 MDP scaler/rotator"
+	depends on V4L_MEM2MEM_DRIVERS
+	depends on VIDEO_DEV
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on MTK_IOMMU_V1 || COMPILE_TEST
+	select VIDEOBUF2_DMA_CONTIG
+	select VIDEOBUF2_DMA_SG
+	select V4L2_MEM2MEM_DEV
+	help
+	  V4L2 memory-to-memory driver for the MDP block of MediaTek
+	  MT6572 SoCs: colour conversion, scaling and rotation of video
+	  frames, programmed by the CPU without a co-processor.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called mt6572-mdp.
