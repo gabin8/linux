@@ -1717,6 +1717,15 @@ void arch_setup_dma_ops(struct device *dev, bool coherent)
 	if (dev->dma_ops)
 		return;
 
+	/*
+	 * The IOMMU core calls this before the device has an IOMMU group.
+	 * Skip it then: the IOMMU driver may attach a shared mapping in
+	 * probe_finalize(), and arch_teardown_dma_ops() must not release it.
+	 * Driver bind calls this again once the group exists.
+	 */
+	if (dev_iommu_fwspec_get(dev) && !device_iommu_mapped(dev))
+		return;
+
 	if (device_iommu_mapped(dev))
 		arm_setup_iommu_dma_ops(dev);
 
