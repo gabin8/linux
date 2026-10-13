@@ -164,9 +164,14 @@ static const int mt2701_m4u_in_larb[] = {
 	LARB2_PORT_OFFSET, LARB3_PORT_OFFSET
 };
 
-static inline int mt2701_m4u_to_larb(int id)
+static int mtk_iommu_v1_m4u_to_larb(const struct mtk_iommu_v1_data *data,
+				    int id)
 {
 	int i;
+
+	/* MT6572 has a single larb that holds all 16 of its M4U ports */
+	if (data->type == MTK_IOMMU_MT6572)
+		return 0;
 
 	for (i = ARRAY_SIZE(mt2701_m4u_in_larb) - 1; i >= 0; i--)
 		if ((id) >= mt2701_m4u_in_larb[i])
@@ -175,11 +180,10 @@ static inline int mt2701_m4u_to_larb(int id)
 	return 0;
 }
 
-static inline int mt2701_m4u_to_port(int id)
+static int mtk_iommu_v1_m4u_to_port(const struct mtk_iommu_v1_data *data,
+				    int id)
 {
-	int larb = mt2701_m4u_to_larb(id);
-
-	return id - mt2701_m4u_in_larb[larb];
+	return id - mt2701_m4u_in_larb[mtk_iommu_v1_m4u_to_larb(data, id)];
 }
 
 static void mtk_iommu_v1_tlb_flush_all(struct mtk_iommu_v1_data *data)
@@ -277,8 +281,8 @@ static void mtk_iommu_v1_config(struct mtk_iommu_v1_data *data,
 	int i;
 
 	for (i = 0; i < fwspec->num_ids; ++i) {
-		larbid = mt2701_m4u_to_larb(fwspec->ids[i]);
-		portid = mt2701_m4u_to_port(fwspec->ids[i]);
+		larbid = mtk_iommu_v1_m4u_to_larb(data, fwspec->ids[i]);
+		portid = mtk_iommu_v1_m4u_to_port(data, fwspec->ids[i]);
 		larb_mmu = &data->larb_imu[larbid];
 
 		dev_dbg(dev, "%s iommu port: %d\n",
@@ -475,12 +479,12 @@ static struct iommu_device *mtk_iommu_v1_probe_device(struct device *dev)
 	data = dev_iommu_priv_get(dev);
 
 	/* Link the consumer device with the smi-larb device(supplier) */
-	larbid = mt2701_m4u_to_larb(fwspec->ids[0]);
+	larbid = mtk_iommu_v1_m4u_to_larb(data, fwspec->ids[0]);
 	if (larbid >= MT2701_LARB_NR_MAX)
 		return ERR_PTR(-EINVAL);
 
 	for (idx = 1; idx < fwspec->num_ids; idx++) {
-		larbidx = mt2701_m4u_to_larb(fwspec->ids[idx]);
+		larbidx = mtk_iommu_v1_m4u_to_larb(data, fwspec->ids[idx]);
 		if (larbid != larbidx) {
 			dev_err(dev, "Can only use one larb. Fail@larb%d-%d.\n",
 				larbid, larbidx);
@@ -524,7 +528,7 @@ static void mtk_iommu_v1_release_device(struct device *dev)
 	unsigned int larbid;
 
 	data = dev_iommu_priv_get(dev);
-	larbid = mt2701_m4u_to_larb(fwspec->ids[0]);
+	larbid = mtk_iommu_v1_m4u_to_larb(data, fwspec->ids[0]);
 	larbdev = data->larb_imu[larbid].dev;
 	device_link_remove(dev, larbdev);
 }
