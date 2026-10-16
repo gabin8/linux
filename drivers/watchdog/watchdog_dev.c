@@ -103,7 +103,7 @@ static ktime_t watchdog_next_keepalive(struct watchdog_device *wdd)
 	ktime_t keepalive_interval;
 	ktime_t last_heartbeat, latest_heartbeat;
 	ktime_t virt_timeout;
-	unsigned int hw_heartbeat_ms;
+	unsigned int hw_heartbeat_ms, keepalive_ms;
 
 	if (watchdog_active(wdd))
 		virt_timeout = ktime_add(wd_data->last_keepalive,
@@ -112,7 +112,17 @@ static ktime_t watchdog_next_keepalive(struct watchdog_device *wdd)
 		virt_timeout = wd_data->open_deadline;
 
 	hw_heartbeat_ms = min_not_zero(timeout_ms, wdd->max_hw_heartbeat_ms);
-	keepalive_interval = ms_to_ktime(hw_heartbeat_ms / 2);
+
+	/*
+	 * The pretimeout fires timeout - pretimeout after a ping. Keep the
+	 * worker's pings well inside that window, or they race the very
+	 * pretimeout they are meant to prevent.
+	 */
+	keepalive_ms = hw_heartbeat_ms;
+	if (wdd->pretimeout)
+		keepalive_ms = min(keepalive_ms,
+				   timeout_ms - wdd->pretimeout * 1000);
+	keepalive_interval = ms_to_ktime(keepalive_ms / 2);
 
 	/*
 	 * To ensure that the watchdog times out wdd->timeout seconds
