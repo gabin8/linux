@@ -133,10 +133,15 @@ properties:
           - const: eint
           - const: pmic
 
+      io-channels:
+        items:
+          - description: AUXADC channel that reads the inline key voltage.
+
     required:
       - compatible
       - interrupts
       - interrupt-names
+      - io-channels
 
   adc:
     type: object
