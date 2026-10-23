@@ -1,0 +1,133 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/mediatek,mt6572-mdp.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6572 Media Data Path
+
+maintainers:
+  - Custom Firmware <gabin278@gmail.com>
+
+description:
+  The MT6572 Media Data Path (MDP) engines convert video frames from memory
+  to memory. MDP_RDMA reads a frame, RSZ scales it, TDSHP sharpens it, WROT
+  rotates it and converts YUV to RGB on the way back to memory, and MDP_WDMA
+  writes it without rotation. The CPU programs the engines directly, and the
+  display mutex starts them together.
+
+properties:
+  compatible:
+    enum:
+      - mediatek,mt6572-mdp-rdma
+      - mediatek,mt6572-mdp-rsz
+      - mediatek,mt6572-mdp-tdshp
+      - mediatek,mt6572-mdp-wdma
+      - mediatek,mt6572-mdp-wrot
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+
+  power-domains:
+    maxItems: 1
+
+  resets:
+    maxItems: 1
+
+  iommus:
+    minItems: 1
+    maxItems: 3
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - power-domains
+  - resets
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          enum:
+            - mediatek,mt6572-mdp-rdma
+            - mediatek,mt6572-mdp-wdma
+    then:
+      properties:
+        iommus:
+          maxItems: 1
+      required:
+        - iommus
+
+  - if:
+      properties:
+        compatible:
+          const: mediatek,mt6572-mdp-wrot
+    then:
+      properties:
+        iommus:
+          items:
+            - description: luma or RGB output
+            - description: Cb or CbCr output
+            - description: Cr output
+      required:
+        - iommus
+
+  - if:
+      properties:
+        compatible:
+          enum:
+            - mediatek,mt6572-mdp-rsz
+            - mediatek,mt6572-mdp-tdshp
+    then:
+      properties:
+        iommus: false
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/mediatek,mt6572-clk.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+    #include <dt-bindings/memory/mediatek,mt6572-memory-port.h>
+    #include <dt-bindings/power/mediatek,mt6572-power-controller.h>
+    #include <dt-bindings/reset/mediatek,mt6572-resets.h>
+
+    rdma@14001000 {
+        compatible = "mediatek,mt6572-mdp-rdma";
+        reg = <0x14001000 0x1000>;
+        interrupts = <GIC_SPI 97 IRQ_TYPE_LEVEL_LOW>;
+        clocks = <&mmsys CLK_MM_DISP_MDP_RDMA>;
+        power-domains = <&spm MT6572_POWER_DOMAIN_DIS>;
+        resets = <&mmsys MT6572_MM_RST_B_MDP_RDMA>;
+        iommus = <&iommu M4U_PORT_MDP_RDMA>;
+    };
+
+    rsz@14002000 {
+        compatible = "mediatek,mt6572-mdp-rsz";
+        reg = <0x14002000 0x1000>;
+        interrupts = <GIC_SPI 94 IRQ_TYPE_LEVEL_LOW>;
+        clocks = <&mmsys CLK_MM_DISP_MDP_RSZ0>;
+        power-domains = <&spm MT6572_POWER_DOMAIN_DIS>;
+        resets = <&mmsys MT6572_MM_RST_B_MDP_RSZ0>;
+    };
+
+    wrot@14005000 {
+        compatible = "mediatek,mt6572-mdp-wrot";
+        reg = <0x14005000 0x1000>;
+        interrupts = <GIC_SPI 95 IRQ_TYPE_LEVEL_LOW>;
+        clocks = <&mmsys CLK_MM_DISP_MDP_WROT>;
+        power-domains = <&spm MT6572_POWER_DOMAIN_DIS>;
+        resets = <&mmsys MT6572_MM_RST_B_MDP_WROT>;
+        iommus = <&iommu M4U_PORT_MDP_ROTO>,
+                 <&iommu M4U_PORT_MDP_ROTCO>,
+                 <&iommu M4U_PORT_MDP_ROTVO>;
+    };
