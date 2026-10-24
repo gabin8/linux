@@ -135,8 +135,8 @@
 	debounce-delay-ms = <32>;
 	keypad,num-rows = <1>;
 	keypad,num-columns = <3>;
-	linux,keymap = <MATRIX_KEY(0, 1, KEY_VOLUMEUP)
-			MATRIX_KEY(0, 2, KEY_VOLUMEDOWN)>;
+	linux,keymap = <MATRIX_KEY(0, 1, KEY_VOLUMEDOWN)
+			MATRIX_KEY(0, 2, KEY_VOLUMEUP)>;
 };
 
 &mmc0 {
