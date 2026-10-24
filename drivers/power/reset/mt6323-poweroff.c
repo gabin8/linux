@@ -12,15 +12,60 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/mfd/mt6323/registers.h>
 #include <linux/mfd/mt6397/core.h>
 #include <linux/mfd/mt6397/rtc.h>
 #include <linux/reboot.h>
+
+#define MT6323_RGS_CHRDET	BIT(5)	/* CHR_CON0: valid charger detected */
+#define MT6323_PWRKEY_DEB	BIT(1)	/* CHRSTATUS: clear while the power key is pressed */
+#define MT6323_PWRC_POLL_MS	50
 
 struct mt6323_pwrc {
 	struct device *dev;
 	struct regmap *regmap;
 	u32 base;
 };
+
+static bool mt6323_pwrc_charger_present(struct mt6323_pwrc *pwrc)
+{
+	unsigned int val;
+
+	return !regmap_read(pwrc->regmap, MT6323_CHR_CON0, &val) &&
+	       (val & MT6323_RGS_CHRDET);
+}
+
+/*
+ * A valid charger is a power-on condition of the PMIC, so with one plugged
+ * in, clearing BBPU leaves the system running. Wait for the charger to go
+ * away, which lets the PMIC power off, or for a press of the power key,
+ * which restarts the system as a power-on would. Restart only once the key
+ * is released: with USB connected, a key held while the bootloader runs
+ * stalls the boot.
+ */
+static void mt6323_pwrc_wait_for_charger(struct mt6323_pwrc *pwrc)
+{
+	bool key_down = false;
+	unsigned int val;
+
+	dev_notice(pwrc->dev,
+		   "charger connected: powering off when it is unplugged, press the power key to restart\n");
+
+	while (mt6323_pwrc_charger_present(pwrc)) {
+		if (regmap_read(pwrc->regmap, MT6323_CHRSTATUS, &val))
+			return;
+
+		if (!(val & MT6323_PWRKEY_DEB))
+			key_down = true;
+		else if (key_down)
+			machine_restart(NULL);
+
+		mdelay(MT6323_PWRC_POLL_MS);
+	}
+
+	/* Give the PMIC time to power off once the charger is gone */
+	mdelay(1000);
+}
 
 static int mt6323_do_pwroff(struct sys_off_data *data)
 {
@@ -41,6 +86,9 @@ static int mt6323_do_pwroff(struct sys_off_data *data)
 
 	/* Wait some time until system down, otherwise, notice with a warn */
 	mdelay(1000);
+
+	if (mt6323_pwrc_charger_present(pwrc))
+		mt6323_pwrc_wait_for_charger(pwrc);
 
 	WARN_ONCE(1, "Unable to power off system\n");
 
