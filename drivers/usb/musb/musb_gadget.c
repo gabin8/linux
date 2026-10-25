@@ -650,6 +650,28 @@ static void rxstate(struct musb *musb, struct musb_request *req)
 							request->actual,
 							channel->max_len);
 					musb_ep->dma->desired_mode = 1;
+				} else if ((musb->ops->quirks & MUSB_G_RX_DMA_MODE1) &&
+					   fifo_count == musb_ep->packet_sz &&
+					   request->length - request->actual >=
+					   2 * musb_ep->packet_sz) {
+					/*
+					 * Let the DMA unload full packets back to
+					 * back, AUTOCLEAR freeing the FIFO after
+					 * each. With DMAMODE a short packet raises
+					 * the endpoint interrupt instead, and
+					 * musb_g_rx() ends the transfer there.
+					 */
+					csr |= MUSB_RXCSR_AUTOCLEAR;
+					musb_writew(epio, MUSB_RXCSR, csr);
+					csr |= MUSB_RXCSR_DMAENAB;
+					musb_writew(epio, MUSB_RXCSR, csr);
+					csr |= MUSB_RXCSR_DMAMODE;
+					musb_writew(epio, MUSB_RXCSR, csr);
+
+					transfer_size = umin(request->length - request->actual,
+							     channel->max_len);
+					transfer_size -= transfer_size % musb_ep->packet_sz;
+					musb_ep->dma->desired_mode = 1;
 				} else {
 					if (!musb_ep->hb_mult &&
 						musb_ep->hw_ep->rx_double_buffered)
@@ -754,10 +776,11 @@ static void rxstate(struct musb *musb, struct musb_request *req)
 			unmap_dma_buffer(req, musb);
 
 			/*
-			 * Clear DMAENAB and AUTOCLEAR for the
+			 * Clear DMAENAB, AUTOCLEAR and DMAMODE for the
 			 * PIO mode transfer
 			 */
-			csr &= ~(MUSB_RXCSR_DMAENAB | MUSB_RXCSR_AUTOCLEAR);
+			csr &= ~(MUSB_RXCSR_DMAENAB | MUSB_RXCSR_AUTOCLEAR |
+				 MUSB_RXCSR_DMAMODE);
 			musb_writew(epio, MUSB_RXCSR, csr);
 
 buffer_aint_mapped:
@@ -783,6 +806,29 @@ buffer_aint_mapped:
 	if (request->actual == request->length ||
 	    fifo_count < musb_ep->packet_sz)
 		musb_g_giveback(musb_ep, request, 0);
+}
+
+/*
+ * While a mode 1 DMA drains a full packet, RXCOUNT shows what is left of it,
+ * so one read can't tell it from a short packet. A short packet stays put
+ * (the DMA won't take it), a full one is gone or smaller a moment later.
+ */
+static bool musb_rx_short_packet(struct musb_ep *musb_ep, void __iomem *epio)
+{
+	u16 count = musb_readw(epio, MUSB_RXCOUNT);
+	int i;
+
+	if (count >= musb_ep->packet_sz)
+		return false;
+
+	for (i = 0; i < 10; i++) {
+		udelay(1);
+		if (!(musb_readw(epio, MUSB_RXCSR) & MUSB_RXCSR_RXPKTRDY) ||
+		    musb_readw(epio, MUSB_RXCOUNT) != count)
+			return false;
+	}
+
+	return true;
 }
 
 /*
@@ -841,6 +887,22 @@ void musb_g_rx(struct musb *musb, u8 epnum)
 	}
 
 	if (dma_channel_status(dma) == MUSB_DMA_STATUS_BUSY) {
+		/*
+		 * A short packet ends a mode 1 transfer before its count runs
+		 * out: keep what the DMA moved and unload the packet by PIO,
+		 * so a late completion irq of the aborted transfer finds no
+		 * DMA to disturb.
+		 */
+		if ((musb->ops->quirks & MUSB_G_RX_DMA_MODE1) &&
+		    dma->desired_mode == 1 && !request->short_not_ok &&
+		    (csr & MUSB_RXCSR_RXPKTRDY) &&
+		    musb_rx_short_packet(musb_ep, epio)) {
+			musb->dma_controller->channel_abort(dma);
+			request->actual += dma->actual_len;
+			unmap_dma_buffer(req, musb);
+			rxstate(musb, req);
+			return;
+		}
 		/* "should not happen"; likely RXPKTRDY pending for DMA */
 		musb_dbg(musb, "%s busy, csr %04x",
 			musb_ep->end_point.name, csr);
@@ -868,15 +930,20 @@ void musb_g_rx(struct musb *musb, u8 epnum)
 		}
 
 		/* incomplete, and not short? wait for next IN packet */
-		if ((request->actual < request->length)
-				&& (musb_ep->dma->actual_len
-					== musb_ep->packet_sz)) {
-			/* In double buffer case, continue to unload fifo if
- 			 * there is Rx packet in FIFO.
- 			 **/
+		if (request->actual < request->length &&
+		    (musb_ep->dma->actual_len == musb_ep->packet_sz ||
+		     (dma->desired_mode == 1 && !request->short_not_ok &&
+		      musb_ep->dma->actual_len &&
+		      !(musb_ep->dma->actual_len % musb_ep->packet_sz)))) {
+			/*
+			 * Unload a packet that is already in the FIFO: in the
+			 * double buffer case, or after a mode 1 transfer, its
+			 * interrupt may have come while the DMA was busy.
+			 */
 			csr = musb_readw(epio, MUSB_RXCSR);
 			if ((csr & MUSB_RXCSR_RXPKTRDY) &&
-				hw_ep->rx_double_buffered)
+			    (hw_ep->rx_double_buffered ||
+			     (dma->desired_mode == 1 && !request->short_not_ok)))
 				goto exit;
 			return;
 		}
