@@ -7,6 +7,7 @@
  * regmap. The SoC-side AFE and the sound card are separate drivers.
  */
 
+#include <linux/bitfield.h>
 #include <linux/bits.h>
 #include <linux/delay.h>
 #include <linux/mfd/mt6397/core.h>
@@ -35,7 +36,17 @@
 /* Speaker clock gate lives in TOP_CKPDN1 (cleared to enable). */
 #define PMIC_RG_AUD_SPK_PDN	0x000e
 #define ABB_AFE_UP8X_FIFO_CFG0	0x401e
+#define ABB_AFE_CON1_DL_RATE	GENMASK(3, 0)
+/*
+ * Writes to the top controls (CON0..CON2) and the DC controls take effect when
+ * the matching CON11 update bit is written as the inverse of its status bit.
+ */
+#define ABB_AFE_CON11_TOP_UPDATE	BIT(8)
+#define ABB_AFE_CON11_DC_UPDATE		BIT(9)
+#define ABB_AFE_CON11_STATUS_SHIFT	8
 #define ABB_AFE_PMIC_NEWIF_CFG0	0x4024
+#define NEWIF_CFG0_DL_RATE	GENMASK(15, 12)
+#define NEWIF_CFG0_DL_BASE	0x0330
 #define ABB_AFE_PMIC_NEWIF_CFG1	0x4026
 #define ABB_AFE_PMIC_NEWIF_CFG2	0x4028
 #define ABB_AFE_PMIC_NEWIF_CFG3	0x402a
@@ -65,6 +76,7 @@
 struct mt6323_codec_priv {
 	struct device *dev;
 	struct regmap *regmap;		/* borrowed from the parent MT6323 MFD */
+	bool newif_on;			/* ABB AFE downlink up; under the DAPM lock */
 };
 
 /*
@@ -123,6 +135,17 @@ static int mt6323_clk_event(struct snd_soc_dapm_widget *w,
 	return 0;
 }
 
+/* Apply ABB AFE register writes: invert the update bits against their status. */
+static void mt6323_abb_update(struct mt6323_codec_priv *priv, unsigned int bits)
+{
+	unsigned int con11, val;
+
+	regmap_read(priv->regmap, ABB_AFE_CON(11), &con11);
+	val = con11 & (ABB_AFE_CON11_TOP_UPDATE | ABB_AFE_CON11_DC_UPDATE) & ~bits;
+	val |= ~(con11 << ABB_AFE_CON11_STATUS_SHIFT) & bits;
+	regmap_write(priv->regmap, ABB_AFE_CON(11), val);
+}
+
 /* AFE<->PMIC serial bridge (NEWIF) downlink enable. */
 static int mt6323_newif_event(struct snd_soc_dapm_widget *w,
 			      struct snd_kcontrol *kcontrol, int event)
@@ -132,17 +155,85 @@ static int mt6323_newif_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
-		/* enable the ABB AFE bridge (CON0) and its clock/format config (CON11) */
-		regmap_write(priv->regmap, ABB_AFE_CON(0),  0x0001);
-		regmap_write(priv->regmap, ABB_AFE_CON(11), 0x0303);
+		/* enable the ABB AFE downlink (CON0) */
+		regmap_write(priv->regmap, ABB_AFE_CON(0), 0x0001);
+		mt6323_abb_update(priv, ABB_AFE_CON11_TOP_UPDATE |
+					ABB_AFE_CON11_DC_UPDATE);
+		priv->newif_on = true;
 		break;
 	case SND_SOC_DAPM_POST_PMD:
-		regmap_write(priv->regmap, ABB_AFE_CON(11), 0x0000);
-		regmap_write(priv->regmap, ABB_AFE_CON(0),  0x0000);
+		priv->newif_on = false;
+		regmap_write(priv->regmap, ABB_AFE_CON(0), 0x0000);
+		mt6323_abb_update(priv, ABB_AFE_CON11_TOP_UPDATE |
+					ABB_AFE_CON11_DC_UPDATE);
 		break;
 	}
 	return 0;
 }
+
+/* Downlink rate codes: ABB_AFE_CON1 (datasheet) and NEWIF_CFG0 (BSP). */
+static const struct {
+	unsigned int rate;
+	u8 abb;
+	u8 newif;
+} mt6323_dl_rates[] = {
+	{  8000,  0, 0 },
+	{ 11025,  1, 1 },
+	{ 12000,  2, 2 },
+	{ 16000,  4, 3 },
+	{ 22050,  5, 4 },
+	{ 24000,  6, 5 },
+	{ 32000,  8, 6 },
+	{ 44100,  9, 7 },
+	{ 48000, 10, 8 },
+};
+
+static int mt6323_set_dl_rate(struct snd_soc_component *component,
+			      unsigned int rate)
+{
+	struct mt6323_codec_priv *priv = snd_soc_component_get_drvdata(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(mt6323_dl_rates); i++)
+		if (mt6323_dl_rates[i].rate == rate)
+			break;
+	if (i == ARRAY_SIZE(mt6323_dl_rates))
+		return -EINVAL;
+
+	/*
+	 * A stopped downlink picks the rate up in the NEWIF power-up. One still
+	 * up (a re-prepare after an xrun) needs the update now.
+	 */
+	snd_soc_dapm_mutex_lock(dapm);
+	regmap_write(priv->regmap, ABB_AFE_CON(1),
+		     FIELD_PREP(ABB_AFE_CON1_DL_RATE, mt6323_dl_rates[i].abb));
+	regmap_write(priv->regmap, ABB_AFE_PMIC_NEWIF_CFG0, NEWIF_CFG0_DL_BASE |
+		     FIELD_PREP(NEWIF_CFG0_DL_RATE, mt6323_dl_rates[i].newif));
+	if (priv->newif_on)
+		mt6323_abb_update(priv, ABB_AFE_CON11_TOP_UPDATE);
+	snd_soc_dapm_mutex_unlock(dapm);
+	return 0;
+}
+
+/* After the AFE accepted the rate, before DAPM powers up the downlink. */
+static int mt6323_codec_prepare(struct snd_pcm_substream *substream,
+				struct snd_soc_dai *dai)
+{
+	return mt6323_set_dl_rate(dai->component, substream->runtime->rate);
+}
+
+/* Back to the probe-time 44.1 kHz default. */
+static int mt6323_codec_hw_free(struct snd_pcm_substream *substream,
+				struct snd_soc_dai *dai)
+{
+	return mt6323_set_dl_rate(dai->component, 44100);
+}
+
+static const struct snd_soc_dai_ops mt6323_codec_dai_ops = {
+	.prepare	= mt6323_codec_prepare,
+	.hw_free	= mt6323_codec_hw_free,
+};
 
 /* Analog DAC: bias + enable on power-up, back to the idle baseline on down. */
 static int mt6323_dac_event(struct snd_soc_dapm_widget *w,
@@ -423,6 +514,7 @@ static struct snd_soc_dai_driver mt6323_dai_driver[] = {
 			.rates = MT6323_CODEC_RATES,
 			.formats = MT6323_CODEC_FORMATS,
 		},
+		.ops = &mt6323_codec_dai_ops,
 	},
 };
 
