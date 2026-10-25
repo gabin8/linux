@@ -111,11 +111,19 @@
 
 #define U3P_U2PHYDTM1		0x06C
 #define P2C_RG_UART_EN			BIT(16)
+#define P2C_FORCE_VBUSVALID		BIT(13)
+#define P2C_FORCE_SESSEND		BIT(12)
+#define P2C_FORCE_BVALID		BIT(11)
+#define P2C_FORCE_AVALID		BIT(10)
 #define P2C_FORCE_IDDIG		BIT(9)
 #define P2C_RG_VBUSVALID		BIT(5)
 #define P2C_RG_SESSEND			BIT(4)
+#define P2C_RG_BVALID			BIT(3)
 #define P2C_RG_AVALID			BIT(2)
 #define P2C_RG_IDDIG			BIT(1)
+#define P2C_FORCE_SESSION_MASK \
+		(P2C_FORCE_VBUSVALID | P2C_FORCE_SESSEND | \
+		P2C_FORCE_BVALID | P2C_FORCE_AVALID)
 
 #define U3P_U2PHYBC12C		0x080
 #define P2C_RG_CHGDT_EN		BIT(0)
@@ -283,6 +291,10 @@ enum mtk_phy_version {
  * @sw_efuse_supported:       Switches off eFuse auto-load from PHY and applies values
  *                            read from different nvmem (usually different eFuse array)
  *                            that is pointed at in the device tree node for this PHY
+ * @no_vbus_sense:            VBUS doesn't reach the PHY (only the PMIC sees it), so the
+ *                            session signals are forced valid in device mode
+ * @shared_uart:              The console UART can be routed to the U2 port pins, so a
+ *                            port the bootloader left in UART mode is not taken over
  * @slew_ref_clock_mhz:         Default reference clock (in MHz) for slew rate calibration
  * @slew_rate_coefficient:    Coefficient for slew rate calibration
  * @version:                  PHY IP Version
@@ -291,6 +303,8 @@ struct mtk_phy_pdata {
 	bool avoid_rx_sen_degradation;
 	bool sw_pll_48m_to_26m;
 	bool sw_efuse_supported;
+	bool no_vbus_sense;
+	bool shared_uart;
 	u8 slew_ref_clock_mhz;
 	u8 slew_rate_coefficient;
 	enum mtk_phy_version version;
@@ -334,6 +348,7 @@ struct mtk_phy_instance {
 	int pre_emphasis;
 	bool bc12_en;
 	bool type_force_mode;
+	bool uart_mode;
 };
 
 struct mtk_tphy {
@@ -909,6 +924,14 @@ static void u2_phy_instance_power_off(struct mtk_tphy *tphy,
 	dev_dbg(tphy->dev, "%s(%d)\n", __func__, index);
 }
 
+static bool u2_phy_in_uart_mode(struct mtk_phy_instance *instance)
+{
+	void __iomem *com = instance->u2_banks.com;
+
+	return (readl(com + U3P_U2PHYDTM0) & P2C_FORCE_UART_EN) &&
+	       (readl(com + U3P_U2PHYDTM1) & P2C_RG_UART_EN);
+}
+
 static void u2_phy_instance_exit(struct mtk_tphy *tphy,
 	struct mtk_phy_instance *instance)
 {
@@ -944,6 +967,17 @@ static void u2_phy_instance_set_mode(struct mtk_tphy *tphy,
 		break;
 	default:
 		return;
+	}
+
+	/* without VBUS the controller never sees a session, fake a B-session */
+	if (tphy->pdata->no_vbus_sense) {
+		if (mode == PHY_MODE_USB_DEVICE) {
+			tmp |= P2C_FORCE_SESSION_MASK | P2C_RG_VBUSVALID |
+			       P2C_RG_BVALID | P2C_RG_AVALID;
+			tmp &= ~P2C_RG_SESSEND;
+		} else {
+			tmp &= ~P2C_FORCE_SESSION_MASK;
+		}
 	}
 	writel(tmp, u2_banks->com + U3P_U2PHYDTM1);
 }
@@ -1371,6 +1405,16 @@ static int mtk_phy_init(struct phy *phy)
 	if (ret)
 		return ret;
 
+	/* the bootloader routed the console UART to the port pins, keep it */
+	instance->uart_mode = instance->type == PHY_TYPE_USB2 &&
+			      tphy->pdata->shared_uart &&
+			      u2_phy_in_uart_mode(instance);
+	if (instance->uart_mode) {
+		dev_info(tphy->dev, "port %d is in UART mode, leaving it alone\n",
+			 instance->index);
+		return 0;
+	}
+
 	phy_efuse_set(instance);
 
 	switch (instance->type) {
@@ -1404,6 +1448,9 @@ static int mtk_phy_power_on(struct phy *phy)
 	struct mtk_phy_instance *instance = phy_get_drvdata(phy);
 	struct mtk_tphy *tphy = dev_get_drvdata(phy->dev.parent);
 
+	if (instance->uart_mode)
+		return 0;
+
 	if (instance->type == PHY_TYPE_USB2) {
 		u2_phy_instance_power_on(tphy, instance);
 		hs_slew_rate_calibrate(tphy, instance);
@@ -1419,6 +1466,9 @@ static int mtk_phy_power_off(struct phy *phy)
 	struct mtk_phy_instance *instance = phy_get_drvdata(phy);
 	struct mtk_tphy *tphy = dev_get_drvdata(phy->dev.parent);
 
+	if (instance->uart_mode)
+		return 0;
+
 	if (instance->type == PHY_TYPE_USB2)
 		u2_phy_instance_power_off(tphy, instance);
 	else if (instance->type == PHY_TYPE_PCIE)
@@ -1432,7 +1482,7 @@ static int mtk_phy_exit(struct phy *phy)
 	struct mtk_phy_instance *instance = phy_get_drvdata(phy);
 	struct mtk_tphy *tphy = dev_get_drvdata(phy->dev.parent);
 
-	if (instance->type == PHY_TYPE_USB2)
+	if (instance->type == PHY_TYPE_USB2 && !instance->uart_mode)
 		u2_phy_instance_exit(tphy, instance);
 
 	clk_bulk_disable_unprepare(TPHY_CLKS_CNT, instance->clks);
@@ -1443,6 +1493,9 @@ static int mtk_phy_set_mode(struct phy *phy, enum phy_mode mode, int submode)
 {
 	struct mtk_phy_instance *instance = phy_get_drvdata(phy);
 	struct mtk_tphy *tphy = dev_get_drvdata(phy->dev.parent);
+
+	if (instance->uart_mode)
+		return 0;
 
 	if (instance->type == PHY_TYPE_USB2)
 		u2_phy_instance_set_mode(tphy, instance, mode);
@@ -1538,6 +1591,14 @@ static const struct mtk_phy_pdata tphy_v3_pdata = {
 	.version = MTK_PHY_V3,
 };
 
+static const struct mtk_phy_pdata mt6572_pdata = {
+	.no_vbus_sense = true,
+	.shared_uart = true,
+	.slew_ref_clock_mhz = 26,
+	.slew_rate_coefficient = 28,
+	.version = MTK_PHY_V1,
+};
+
 static const struct mtk_phy_pdata mt8173_pdata = {
 	.avoid_rx_sen_degradation = true,
 	.slew_ref_clock_mhz = 26,
@@ -1554,6 +1615,7 @@ static const struct mtk_phy_pdata mt8195_pdata = {
 static const struct of_device_id mtk_tphy_id_table[] = {
 	{ .compatible = "mediatek,mt2701-u3phy", .data = &tphy_v1_pdata },
 	{ .compatible = "mediatek,mt2712-u3phy", .data = &tphy_v2_pdata },
+	{ .compatible = "mediatek,mt6572-tphy", .data = &mt6572_pdata },
 	{ .compatible = "mediatek,mt8173-u3phy", .data = &mt8173_pdata },
 	{ .compatible = "mediatek,mt8195-tphy", .data = &mt8195_pdata },
 	{ .compatible = "mediatek,generic-tphy-v1", .data = &tphy_v1_pdata },
