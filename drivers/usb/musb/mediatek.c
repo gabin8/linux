@@ -392,6 +392,37 @@ static const struct musb_hdrc_config mtk_musb_hdrc_config = {
 	.ram_bits = MTK_MUSB_RAM_BITS,
 };
 
+/*
+ * Double-buffer the first three Rx FIFOs, so the host can send the next
+ * packet while the previous one is unloaded. The rest is shrunk to fit the
+ * 8 KiB of FIFO RAM.
+ */
+static const struct musb_fifo_cfg mt6572_musb_mode_cfg[] = {
+	{ .hw_ep_num = 1, .style = FIFO_TX, .maxpacket = 512, },
+	{ .hw_ep_num = 1, .style = FIFO_RX, .maxpacket = 512, .mode = BUF_DOUBLE, },
+	{ .hw_ep_num = 2, .style = FIFO_TX, .maxpacket = 512, },
+	{ .hw_ep_num = 2, .style = FIFO_RX, .maxpacket = 512, .mode = BUF_DOUBLE, },
+	{ .hw_ep_num = 3, .style = FIFO_TX, .maxpacket = 512, },
+	{ .hw_ep_num = 3, .style = FIFO_RX, .maxpacket = 512, .mode = BUF_DOUBLE, },
+	{ .hw_ep_num = 4, .style = FIFO_TX, .maxpacket = 512, },
+	{ .hw_ep_num = 4, .style = FIFO_RX, .maxpacket = 512, },
+	{ .hw_ep_num = 5, .style = FIFO_TX, .maxpacket = 256, },
+	{ .hw_ep_num = 5, .style = FIFO_RX, .maxpacket = 256, },
+	{ .hw_ep_num = 6, .style = FIFO_TX, .maxpacket = 64, },
+	{ .hw_ep_num = 6, .style = FIFO_RX, .maxpacket = 64, },
+	{ .hw_ep_num = 7, .style = FIFO_TX, .maxpacket = 64, },
+	{ .hw_ep_num = 7, .style = FIFO_RX, .maxpacket = 64, },
+};
+
+static const struct musb_hdrc_config mt6572_musb_hdrc_config = {
+	.fifo_cfg = mt6572_musb_mode_cfg,
+	.fifo_cfg_size = ARRAY_SIZE(mt6572_musb_mode_cfg),
+	.multipoint = true,
+	.dyn_fifo = true,
+	.num_eps = MTK_MUSB_MAX_EP_NUM,
+	.ram_bits = MTK_MUSB_RAM_BITS,
+};
+
 static const struct platform_device_info mtk_dev_info = {
 	.name = "musb-hdrc",
 	.id = PLATFORM_DEVID_AUTO,
@@ -425,7 +456,7 @@ static int mtk_musb_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	pdata->config = &mtk_musb_hdrc_config;
+	pdata->config = of_device_get_match_data(dev);
 	pdata->platform_ops = &mtk_musb_ops;
 	pdata->mode = usb_get_dr_mode(dev);
 
@@ -514,20 +545,19 @@ static void mtk_musb_remove(struct platform_device *pdev)
 	usb_phy_generic_unregister(usb_phy);
 }
 
-#ifdef CONFIG_OF
 static const struct of_device_id mtk_musb_match[] = {
-	{.compatible = "mediatek,mtk-musb",},
+	{ .compatible = "mediatek,mt6572-musb", .data = &mt6572_musb_hdrc_config },
+	{ .compatible = "mediatek,mtk-musb", .data = &mtk_musb_hdrc_config },
 	{},
 };
 MODULE_DEVICE_TABLE(of, mtk_musb_match);
-#endif
 
 static struct platform_driver mtk_musb_driver = {
 	.probe = mtk_musb_probe,
 	.remove = mtk_musb_remove,
 	.driver = {
 		   .name = "musb-mtk",
-		   .of_match_table = of_match_ptr(mtk_musb_match),
+		   .of_match_table = mtk_musb_match,
 	},
 };
 
