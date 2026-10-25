@@ -288,6 +288,8 @@ struct musb {
 	struct delayed_work	deassert_reset_work;
 	struct delayed_work	finish_resume_work;
 	struct delayed_work	gadget_work;
+	struct work_struct	gadget_rx_work;
+	u16			gadget_rx_pending;	/* OUT eps with a packet to unload */
 	u16			hwvers;
 
 	u16			intrrxe;
