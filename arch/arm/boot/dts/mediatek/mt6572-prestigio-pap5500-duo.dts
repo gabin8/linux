@@ -56,6 +56,8 @@
 		re-charge-voltage-microvolt = <4110000>;
 		over-voltage-threshold-microvolt = <4300000>;
 		operating-range-celsius = <0 45>;
+		/* Measured: charge-current step, 0.27-0.30 Ohm at ~90% */
+		factory-internal-resistance-micro-ohms = <280000>;
 		ocv-capacity-celsius = <25>;
 		ocv-capacity-table-0 = <4189000 100>, <4107000  95>,
 				       <4063000  90>, <4018000  85>,
@@ -98,6 +100,14 @@
 			50000 316
 			55000 281
 			60000 249>;
+	};
+
+	fuel-gauge {
+		compatible = "mediatek,mt6323-battery";
+		io-channels = <&mt6323_adc MT6323_AUXADC_BATSNS>, <&battery_ntc 0>;
+		io-channel-names = "voltage", "temp";
+		monitored-battery = <&battery>;
+		power-supplies = <&mt6323_charger>;
 	};
 
 	haptic {
