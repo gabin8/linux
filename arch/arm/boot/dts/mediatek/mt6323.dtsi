@@ -27,6 +27,14 @@
 			#io-channel-cells = <1>;
 		};
 
+		mt6323_charger: charger {
+			compatible = "mediatek,mt6323-charger";
+			io-channels = <&mt6323_adc MT6323_AUXADC_ISENSE>,
+				      <&mt6323_adc MT6323_AUXADC_BATSNS>;
+			io-channel-names = "isense", "batsns";
+			status = "disabled";
+		};
+
 		mt6323_codec: audio-codec {
 			compatible = "mediatek,mt6323-sound";
 		};
