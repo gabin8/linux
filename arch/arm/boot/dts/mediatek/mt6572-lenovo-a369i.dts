@@ -57,12 +57,59 @@
 		default-brightness-level = <512>;
 	};
 
+	battery: battery {
+		compatible = "simple-battery";
+		device-chemistry = "lithium-ion";
+		charge-full-design-microamp-hours = <1500000>;
+		voltage-min-design-microvolt = <3400000>;
+		voltage-max-design-microvolt = <4200000>;
+		constant-charge-voltage-max-microvolt = <4200000>;
+		constant-charge-current-max-microamp = <650000>;
+		charge-term-current-microamp = <150000>;
+		re-charge-voltage-microvolt = <4110000>;
+		over-voltage-threshold-microvolt = <4300000>;
+		operating-range-celsius = <0 45>;
+	};
+
+	/* 10k NTC on BATON, 16.9k pull-up to 1.8 V, 27k in parallel */
+	battery_ntc: thermal-sensor-battery {
+		compatible = "generic-adc-thermal";
+		#io-channel-cells = <1>;
+		#thermal-sensor-cells = <0>;
+		io-channels = <&mt6323_adc MT6323_AUXADC_BATON1>;
+		io-channel-names = "sensor-channel";
+		temperature-lookup-table = <
+			(-20000) 961
+			(-15000) 927
+			(-10000) 890
+			(-5000) 847
+			0 801
+			5000 752
+			10000 701
+			15000 648
+			20000 595
+			25000 543
+			30000 492
+			35000 444
+			40000 398
+			45000 356
+			50000 316
+			55000 281
+			60000 249>;
+	};
+
 	sound {
 		compatible = "mediatek,mt6572-mt6323-sound";
 		mediatek,platform = <&afe>;
 		audio-routing = "Speaker", "Speaker Driver",
 				"Earpiece", "Earpiece Driver";
 		mediatek,accdet = <&mt6323_accdet>;
+	};
+
+	thermal-zones {
+		battery-thermal {
+			thermal-sensors = <&battery_ntc>;
+		};
 	};
 };
 
@@ -179,6 +226,16 @@
 	interrupts-extended = <&pio 2 IRQ_TYPE_EDGE_BOTH>,
 			      <&pmic 18 IRQ_TYPE_LEVEL_HIGH>;
 	interrupt-names = "eint", "pmic";
+	status = "okay";
+};
+
+&mt6323_charger {
+	io-channels = <&mt6323_adc MT6323_AUXADC_ISENSE>,
+		      <&mt6323_adc MT6323_AUXADC_BATSNS>,
+		      <&battery_ntc 0>;
+	io-channel-names = "isense", "batsns", "temp";
+	monitored-battery = <&battery>;
+	shunt-resistor-micro-ohms = <200000>;
 	status = "okay";
 };
 
