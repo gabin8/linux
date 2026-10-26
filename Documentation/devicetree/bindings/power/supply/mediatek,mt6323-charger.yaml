@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/mediatek,mt6323-charger.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6323 PMIC linear charger
+
+maintainers:
+  - Custom Firmware <gabin278@gmail.com>
+
+description:
+  The MT6323 PMIC charges a single-cell Li-ion battery from the USB port
+  through an external pass transistor. It regulates the charge current,
+  sensed across a resistor between the transistor and the battery, and the
+  battery voltage in hardware.
+
+allOf:
+  - $ref: power-supply.yaml#
+
+properties:
+  compatible:
+    const: mediatek,mt6323-charger
+
+  io-channels:
+    minItems: 2
+    items:
+      - description: AUXADC ISENSE, the charger side of the sense resistor
+      - description: AUXADC BATSNS, the battery side of the sense resistor
+      - description: Battery temperature, in millidegrees Celsius
+
+  io-channel-names:
+    minItems: 2
+    items:
+      - const: isense
+      - const: batsns
+      - const: temp
+
+  monitored-battery:
+    description:
+      The battery. Its constant-charge-voltage-max-microvolt and
+      constant-charge-current-max-microamp are required, and
+      operating-range-celsius when a temperature channel is given.
+
+  shunt-resistor-micro-ohms:
+    description: The charge current sense resistor.
+
+required:
+  - compatible
+  - io-channels
+  - io-channel-names
+  - monitored-battery
+  - shunt-resistor-micro-ohms
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/iio/adc/mediatek,mt6323-auxadc.h>
+
+    charger {
+        compatible = "mediatek,mt6323-charger";
+        io-channels = <&mt6323_adc MT6323_AUXADC_ISENSE>,
+                      <&mt6323_adc MT6323_AUXADC_BATSNS>,
+                      <&battery_ntc 0>;
+        io-channel-names = "isense", "batsns", "temp";
+        monitored-battery = <&battery>;
+        shunt-resistor-micro-ohms = <200000>;
+    };
