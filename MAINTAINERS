@@ -16632,6 +16632,13 @@ S:	Maintained
 F:	drivers/iio/adc/mt6323-auxadc.c
 F:	include/dt-bindings/iio/adc/mediatek,mt6323-auxadc.h
 
+MEDIATEK MT6323 PMIC CHARGER DRIVER
+M:	Custom Firmware <gabin278@gmail.com>
+L:	linux-pm@vger.kernel.org
+S:	Maintained
+F:	Documentation/devicetree/bindings/power/supply/mediatek,mt6323-charger.yaml
+F:	drivers/power/supply/mt6323_charger.c
+
 MEDIATEK MT6323 PMIC NVMEM DRIVER
 M:	Roman Vivchar <rva333@protonmail.com>
 S:	Maintained
