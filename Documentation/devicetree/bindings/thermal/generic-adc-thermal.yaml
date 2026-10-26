@@ -24,6 +24,12 @@ properties:
   '#thermal-sensor-cells':
     const: 0
 
+  '#io-channel-cells':
+    const: 1
+    description:
+      The sensor also provides its temperature as an IIO channel, for
+      consumers such as fuel gauges and chargers.
+
   io-channels:
     maxItems: 1
 
