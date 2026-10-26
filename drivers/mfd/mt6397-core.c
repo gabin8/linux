@@ -119,6 +119,12 @@ static const struct resource mt6397_keys_resources[] = {
 	DEFINE_RES_IRQ_NAMED(MT6397_IRQ_HOMEKEY, "homekey"),
 };
 
+static const struct resource mt6323_charger_resources[] = {
+	DEFINE_RES_IRQ_NAMED(MT6323_IRQ_STATUS_CHRDET, "chrdet"),
+	DEFINE_RES_IRQ_NAMED(MT6323_IRQ_STATUS_OV, "ov"),
+	DEFINE_RES_IRQ_NAMED(MT6323_IRQ_STATUS_WATCHDOG, "watchdog"),
+};
+
 static const struct resource mt6323_pwrc_resources[] = {
 	DEFINE_RES_MEM(MT6323_PWRC_BASE, MT6323_PWRC_SIZE),
 };
@@ -130,6 +136,11 @@ static const struct mfd_cell mt6323_devs[] = {
 	}, {
 		.name = "mt6323-auxadc",
 		.of_compatible = "mediatek,mt6323-auxadc",
+	}, {
+		.name = "mt6323-charger",
+		.num_resources = ARRAY_SIZE(mt6323_charger_resources),
+		.resources = mt6323_charger_resources,
+		.of_compatible = "mediatek,mt6323-charger",
 	}, {
 		.name = "mt6323-efuse",
 		.of_compatible = "mediatek,mt6323-efuse",
