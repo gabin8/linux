@@ -70,6 +70,27 @@
 		re-charge-voltage-microvolt = <4110000>;
 		over-voltage-threshold-microvolt = <4300000>;
 		operating-range-celsius = <0 45>;
+		factory-internal-resistance-micro-ohms = <215000>;
+		ocv-capacity-celsius = <25>;
+		ocv-capacity-table-0 = <4158000 100>, <4104000  95>,
+				       <4063000  90>, <4024000  85>,
+				       <3984000  80>, <3948000  75>,
+				       <3922000  70>, <3897000  65>,
+				       <3856000  60>, <3819000  55>,
+				       <3802000  50>, <3789000  45>,
+				       <3778000  40>, <3768000  35>,
+				       <3762000  30>, <3752000  25>,
+				       <3732000  20>, <3701000  15>,
+				       <3674000  10>, <3660000   5>,
+				       <3407000   0>;
+	};
+
+	fuel-gauge {
+		compatible = "mediatek,mt6323-battery";
+		io-channels = <&mt6323_adc MT6323_AUXADC_BATSNS>, <&battery_ntc 0>;
+		io-channel-names = "voltage", "temp";
+		monitored-battery = <&battery>;
+		power-supplies = <&mt6323_charger>;
 	};
 
 	/* 10k NTC on BATON, 16.9k pull-up to 1.8 V, 27k in parallel */
