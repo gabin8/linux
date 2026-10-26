@@ -705,6 +705,17 @@ config CHARGER_MP2629
 	  Battery charger. This driver provides Battery charger power management
 	  functions on the systems.
 
+config CHARGER_MT6323
+	tristate "MediaTek MT6323 PMIC linear charger"
+	depends on MFD_MT6397
+	depends on IIO
+	help
+	  Say Y here to enable the linear charger of the MediaTek MT6323
+	  PMIC, found next to MT6572 and similar SoCs. It drives an external
+	  pass transistor and charges a single Li-ion cell from the USB port,
+	  within the limits of the monitored battery, and stops when the
+	  battery is full or out of its temperature range.
+
 config CHARGER_MT6360
 	tristate "Mediatek MT6360 Charger Driver"
 	depends on MFD_MT6360
