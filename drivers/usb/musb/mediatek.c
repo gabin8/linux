@@ -436,16 +436,16 @@ static const struct musb_hdrc_config mtk_musb_hdrc_config = {
 };
 
 /*
- * Double-buffer the first three Rx FIFOs, so the host can send the next
- * packet while the previous one is unloaded. The rest is shrunk to fit the
- * 8 KiB of FIFO RAM.
+ * Double-buffer the first three FIFOs both ways, so the next packet can be
+ * loaded or unloaded while the host moves the previous one. The rest is
+ * shrunk to fit the 8 KiB of FIFO RAM.
  */
 static const struct musb_fifo_cfg mt6572_musb_mode_cfg[] = {
-	{ .hw_ep_num = 1, .style = FIFO_TX, .maxpacket = 512, },
+	{ .hw_ep_num = 1, .style = FIFO_TX, .maxpacket = 512, .mode = BUF_DOUBLE, },
 	{ .hw_ep_num = 1, .style = FIFO_RX, .maxpacket = 512, .mode = BUF_DOUBLE, },
-	{ .hw_ep_num = 2, .style = FIFO_TX, .maxpacket = 512, },
+	{ .hw_ep_num = 2, .style = FIFO_TX, .maxpacket = 512, .mode = BUF_DOUBLE, },
 	{ .hw_ep_num = 2, .style = FIFO_RX, .maxpacket = 512, .mode = BUF_DOUBLE, },
-	{ .hw_ep_num = 3, .style = FIFO_TX, .maxpacket = 512, },
+	{ .hw_ep_num = 3, .style = FIFO_TX, .maxpacket = 512, .mode = BUF_DOUBLE, },
 	{ .hw_ep_num = 3, .style = FIFO_RX, .maxpacket = 512, .mode = BUF_DOUBLE, },
 	{ .hw_ep_num = 4, .style = FIFO_TX, .maxpacket = 512, },
 	{ .hw_ep_num = 4, .style = FIFO_RX, .maxpacket = 512, },
