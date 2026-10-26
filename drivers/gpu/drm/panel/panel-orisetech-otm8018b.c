@@ -20,12 +20,20 @@ struct otm8018b {
 	struct regulator *vcc;
 	const struct panel_desc *desc;
 	bool prepared;
+	bool powered;
+	bool initialized;
 };
 
 struct panel_desc {
 	const struct drm_display_mode *display_mode;
 	unsigned long mode_flags;
 	void (*init_sequence)(struct mipi_dsi_multi_context *ctx);
+	/*
+	 * Like the vendor driver: initialise once, then only enter and leave
+	 * sleep mode, with the supply on and reset released. A panel the
+	 * bootloader left running is not initialised again.
+	 */
+	bool stay_powered;
 };
 
 static const struct drm_display_mode otm8018b_boyi_mode = {
@@ -62,6 +70,34 @@ static inline struct otm8018b *panel_to_otm8018b(struct drm_panel *panel)
 	return container_of(panel, struct otm8018b, panel);
 }
 
+static void otm8018b_reset(struct otm8018b *ctx)
+{
+	if (!ctx->reset_gpio)
+		return;
+
+	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+	gpiod_set_value_cansleep(ctx->reset_gpio, 0);
+	usleep_range(10000, 11000);
+
+	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+	usleep_range(50000, 55000);
+}
+
+/* Awake, in normal mode and showing a picture: someone initialised it. */
+static bool otm8018b_is_running(struct mipi_dsi_device *dsi)
+{
+	const u8 running = MIPI_DSI_DCS_POWER_MODE_SLEEP |
+			   MIPI_DSI_DCS_POWER_MODE_NORMAL |
+			   MIPI_DSI_DCS_POWER_MODE_DISPLAY;
+	u8 mode;
+
+	if (mipi_dsi_dcs_get_power_mode(dsi, &mode))
+		return false;
+
+	dev_info(&dsi->dev, "power mode %#x at the first prepare\n", mode);
+	return (mode & running) == running;
+}
+
 static int otm8018b_prepare(struct drm_panel *panel)
 {
 	struct otm8018b *ctx = panel_to_otm8018b(panel);
@@ -69,29 +105,33 @@ static int otm8018b_prepare(struct drm_panel *panel)
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
 	int ret;
 
-	ret = regulator_enable(ctx->vcc);
-	if (ret < 0) {
-		dev_err(panel->dev, "failed to enable vcc: %d\n", ret);
-		return ret;
-	}
-	msleep(20);
-
-	if (ctx->reset_gpio) {
-		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
-		gpiod_set_value_cansleep(ctx->reset_gpio, 0);
-		usleep_range(10000, 11000);
-
-		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
-		usleep_range(50000, 55000);
+	if (!ctx->powered) {
+		ret = regulator_enable(ctx->vcc);
+		if (ret < 0) {
+			dev_err(panel->dev, "failed to enable vcc: %d\n", ret);
+			return ret;
+		}
+		ctx->powered = true;
+		msleep(20);
 	}
 
-	if (ctx->desc->init_sequence)
-		ctx->desc->init_sequence(&dsi_ctx);
+	if (!ctx->initialized) {
+		if (ctx->desc->stay_powered && otm8018b_is_running(dsi)) {
+			dev_info(panel->dev, "left running by the bootloader, not reinitialised\n");
+		} else {
+			otm8018b_reset(ctx);
+			if (ctx->desc->init_sequence)
+				ctx->desc->init_sequence(&dsi_ctx);
+		}
 
-	if (dsi_ctx.accum_err) {
-		dev_err(panel->dev, "failed to init panel: %d\n", dsi_ctx.accum_err);
-		regulator_disable(ctx->vcc);
-		return dsi_ctx.accum_err;
+		if (dsi_ctx.accum_err) {
+			dev_err(panel->dev, "failed to init panel: %d\n",
+				dsi_ctx.accum_err);
+			regulator_disable(ctx->vcc);
+			ctx->powered = false;
+			return dsi_ctx.accum_err;
+		}
+		ctx->initialized = true;
 	}
 
 	mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
@@ -113,12 +153,17 @@ static int otm8018b_unprepare(struct drm_panel *panel)
 	mipi_dsi_dcs_set_display_off_multi(&dsi_ctx);
 	mipi_dsi_dcs_enter_sleep_mode_multi(&dsi_ctx);
 	mipi_dsi_msleep(&dsi_ctx, 120);
+	ctx->prepared = false;
+
+	if (ctx->desc->stay_powered)
+		return dsi_ctx.accum_err;
 
 	if (ctx->reset_gpio)
 		gpiod_set_value_cansleep(ctx->reset_gpio, 0);
 
 	regulator_disable(ctx->vcc);
-	ctx->prepared = false;
+	ctx->powered = false;
+	ctx->initialized = false;
 	return dsi_ctx.accum_err;
 }
 
@@ -155,7 +200,12 @@ static int otm8018b_probe(struct mipi_dsi_device *dsi)
 	if (IS_ERR(ctx))
 		return PTR_ERR(ctx);
 
-	ctx->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
+	ctx->desc = device_get_match_data(dev);
+
+	/* Don't reset a panel the bootloader left running */
+	ctx->reset_gpio = devm_gpiod_get_optional(dev, "reset",
+						  ctx->desc->stay_powered ?
+						  GPIOD_OUT_HIGH : GPIOD_OUT_LOW);
 	if (IS_ERR(ctx->reset_gpio))
 		return dev_err_probe(dev, PTR_ERR(ctx->reset_gpio),
 				     "failed to get reset-gpios\n");
@@ -164,8 +214,6 @@ static int otm8018b_probe(struct mipi_dsi_device *dsi)
 	if (IS_ERR(ctx->vcc))
 		return dev_err_probe(dev, PTR_ERR(ctx->vcc),
 				     "failed to request vcc supply\n");
-
-	ctx->desc = device_get_match_data(dev);
 
 	mipi_dsi_set_drvdata(dsi, ctx);
 	ctx->dev = dev;
@@ -198,6 +246,9 @@ static void otm8018b_remove(struct mipi_dsi_device *dsi)
 
 	mipi_dsi_detach(dsi);
 	drm_panel_remove(&ctx->panel);
+
+	if (ctx->powered)
+		regulator_disable(ctx->vcc);
 }
 
 static void otm8018b_djn_init(struct mipi_dsi_multi_context *ctx)
@@ -385,7 +436,8 @@ static const struct panel_desc otm8018b_djn_desc = {
 	.display_mode = &otm8018b_djn_mode,
 	.mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE |
 		      MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS,
-	.init_sequence = otm8018b_djn_init
+	.init_sequence = otm8018b_djn_init,
+	.stay_powered = true,
 };
 
 static const struct of_device_id orisetech_otm8018b_of_match[] = {
