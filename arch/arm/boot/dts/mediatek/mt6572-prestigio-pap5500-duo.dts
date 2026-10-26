@@ -46,9 +46,16 @@
 
 	battery: battery {
 		compatible = "simple-battery";
+		device-chemistry = "lithium-ion";
 		charge-full-design-microamp-hours = <2000000>;
 		voltage-max-design-microvolt = <4200000>;
 		voltage-min-design-microvolt = <3300000>;
+		constant-charge-voltage-max-microvolt = <4200000>;
+		constant-charge-current-max-microamp = <650000>;
+		charge-term-current-microamp = <150000>;
+		re-charge-voltage-microvolt = <4110000>;
+		over-voltage-threshold-microvolt = <4300000>;
+		operating-range-celsius = <0 45>;
 		ocv-capacity-celsius = <25>;
 		ocv-capacity-table-0 = <4189000 100>, <4107000  95>,
 				       <4063000  90>, <4018000  85>,
@@ -61,6 +68,36 @@
 				       <3671000  20>, <3596000  15>,
 				       <3536000  10>, <3493000   5>,
 				       <3419000   0>;
+	};
+
+	/*
+	 * 10k NTC on BATON, 16.9k pull-up to 1.8 V, 27k in parallel: BATON reads
+	 * 514 mV at room temperature, which only this divider fits
+	 */
+	battery_ntc: thermal-sensor-battery {
+		compatible = "generic-adc-thermal";
+		#io-channel-cells = <1>;
+		#thermal-sensor-cells = <0>;
+		io-channels = <&mt6323_adc MT6323_AUXADC_BATON1>;
+		io-channel-names = "sensor-channel";
+		temperature-lookup-table = <
+			(-20000) 961
+			(-15000) 927
+			(-10000) 890
+			(-5000) 847
+			0 801
+			5000 752
+			10000 701
+			15000 648
+			20000 595
+			25000 543
+			30000 492
+			35000 444
+			40000 398
+			45000 356
+			50000 316
+			55000 281
+			60000 249>;
 	};
 
 	haptic {
@@ -90,6 +127,12 @@
 		num-interpolated-steps = <1023>;
 		default-brightness-level = <512>;
 		power-supply = <&mt6323_vsys_reg>;
+	};
+
+	thermal-zones {
+		battery-thermal {
+			thermal-sensors = <&battery_ntc>;
+		};
 	};
 };
 
@@ -207,6 +250,16 @@
 	};
 };
 
+&mt6323_charger {
+	io-channels = <&mt6323_adc MT6323_AUXADC_ISENSE>,
+		      <&mt6323_adc MT6323_AUXADC_BATSNS>,
+		      <&battery_ntc 0>;
+	io-channel-names = "isense", "batsns", "temp";
+	monitored-battery = <&battery>;
+	shunt-resistor-micro-ohms = <220000>;
+	status = "okay";
+};
+
 &mt6323_vgp1_reg {
 	regulator-min-microvolt = <2800000>;
 	regulator-max-microvolt = <2800000>;
@@ -312,7 +365,6 @@
 	pinctrl-names = "default";
 	interrupts = <16 IRQ_TYPE_LEVEL_HIGH>;
 };
-
 
 &mmc0 {
 	pinctrl-0 = <&mmc0_pins>;
