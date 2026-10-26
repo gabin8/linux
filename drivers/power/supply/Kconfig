@@ -705,6 +705,19 @@ config CHARGER_MP2629
 	  Battery charger. This driver provides Battery charger power management
 	  functions on the systems.
 
+config BATTERY_MT6323
+	tristate "MediaTek MT6323 PMIC software fuel gauge"
+	depends on MFD_MT6397 && IIO
+	help
+	  Software fuel gauge for the MediaTek MT6323 PMIC, which has no
+	  autonomous fuel-gauge hardware. It estimates the state of charge
+	  from the battery voltage: the gap to the open-circuit voltage of
+	  the simple-battery OCV table, over the battery's internal
+	  resistance, gives the current, which it integrates.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called mt6323_battery.
+
 config CHARGER_MT6323
 	tristate "MediaTek MT6323 PMIC linear charger"
 	depends on MFD_MT6397
