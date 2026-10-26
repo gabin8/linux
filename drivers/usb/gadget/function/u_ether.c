@@ -62,9 +62,10 @@ struct eth_dev {
 	struct net_device	*net;
 	struct usb_gadget	*gadget;
 
-	spinlock_t		req_lock;	/* guard {rx,tx}_reqs */
+	spinlock_t		req_lock;	/* guard {rx,tx}_reqs, tx_flush */
 	struct list_head	tx_reqs, rx_reqs;
 	atomic_t		tx_qlen;
+	bool			tx_flush;	/* flush wrapped frames on completion */
 
 	struct sk_buff_head	rx_frames;
 
@@ -406,10 +407,13 @@ static void eth_work(struct work_struct *work)
 		DBG(dev, "work done, flags = 0x%lx\n", dev->todo);
 }
 
+static netdev_tx_t eth_start_xmit(struct sk_buff *skb, struct net_device *net);
+
 static void tx_complete(struct usb_ep *ep, struct usb_request *req)
 {
 	struct sk_buff	*skb = req->context;
 	struct eth_dev	*dev = ep->driver_data;
+	bool		flush;
 
 	switch (req->status) {
 	default:
@@ -428,11 +432,16 @@ static void tx_complete(struct usb_ep *ep, struct usb_request *req)
 
 	spin_lock(&dev->req_lock);
 	list_add(&req->list, &dev->tx_reqs);
+	flush = dev->tx_flush;
+	dev->tx_flush = false;
 	spin_unlock(&dev->req_lock);
 
 	atomic_dec(&dev->tx_qlen);
 	if (netif_carrier_ok(dev->net))
 		netif_wake_queue(dev->net);
+
+	if (flush)
+		eth_start_xmit(NULL, dev->net);
 }
 
 static inline int is_promisc(u16 cdc_filter)
@@ -519,6 +528,12 @@ static netdev_tx_t eth_start_xmit(struct sk_buff *skb,
 	 * network stack decided to xmit but before we got the spinlock.
 	 */
 	if (list_empty(&dev->tx_reqs)) {
+		/*
+		 * Nothing retries a flush of the frames the wrapper holds
+		 * (skb == NULL), so leave it to the next completed request.
+		 */
+		if (!skb)
+			dev->tx_flush = true;
 		spin_unlock_irqrestore(&dev->req_lock, flags);
 		return NETDEV_TX_BUSY;
 	}
