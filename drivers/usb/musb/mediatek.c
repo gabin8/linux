@@ -9,6 +9,7 @@
 
 #include <linux/clk.h>
 #include <linux/dma-mapping.h>
+#include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
@@ -29,6 +30,9 @@
 #define MUSB_TXTOGEN		0x86
 #define MTK_TOGGLE_EN		GENMASK(15, 0)
 
+#define MTK_MUSB_BUSPERF3	0x74
+#define MTK_MUSB_EP_SWRST	BIT(1)
+
 #define TX_INT_STATUS		BIT(0)
 #define RX_INT_STATUS		BIT(1)
 #define USBCOM_INT_STATUS	BIT(2)
@@ -38,6 +42,16 @@
 #define DMA_INTR_UNMASK_SET_MSK	GENMASK(31, 24)
 
 #define MTK_MUSB_CLKS_NUM	3
+
+/**
+ * struct mtk_musb_data - SoC specific data
+ * @config: endpoint and FIFO layout
+ * @reset_mac: reset the controller before setting it up
+ */
+struct mtk_musb_data {
+	const struct musb_hdrc_config *config;
+	bool reset_mac;
+};
 
 struct mtk_glue {
 	struct device *dev;
@@ -50,6 +64,7 @@ struct mtk_glue {
 	struct clk_bulk_data clks[MTK_MUSB_CLKS_NUM];
 	enum usb_role role;
 	struct usb_role_switch *role_sw;
+	const struct mtk_musb_data *data;
 };
 
 static int mtk_musb_clks_get(struct mtk_glue *glue)
@@ -252,6 +267,24 @@ static int mtk_musb_set_mode(struct musb *musb, u8 mode)
 	return 0;
 }
 
+/*
+ * The boot chain's USB download mode uses the controller before us and leaves
+ * the Tx FIFO of its endpoint out of step: a double-buffered FIFO then sends
+ * the half loaded before the current one on every TxPktRdy. Neither flushing
+ * the FIFO nor setting it up again puts it back; resetting the MAC does.
+ */
+static int mtk_musb_reset_mac(struct musb *musb)
+{
+	void __iomem *busperf3 = musb->mregs + MTK_MUSB_BUSPERF3;
+	u16 val;
+
+	musb_writew(musb->mregs, MTK_MUSB_BUSPERF3,
+		    musb_readw(musb->mregs, MTK_MUSB_BUSPERF3) | MTK_MUSB_EP_SWRST);
+
+	return readw_poll_timeout(busperf3, val, !(val & MTK_MUSB_EP_SWRST),
+				  10, 1000);
+}
+
 static int mtk_musb_init(struct musb *musb)
 {
 	struct device *dev = musb->controller;
@@ -284,6 +317,14 @@ static int mtk_musb_init(struct musb *musb)
 
 	phy_set_mode(glue->phy, glue->phy_mode);
 
+	if (glue->data->reset_mac) {
+		ret = mtk_musb_reset_mac(musb);
+		if (ret) {
+			dev_err(dev, "controller reset timed out\n");
+			goto err_reset_mac;
+		}
+	}
+
 #if defined(CONFIG_USB_INVENTRA_DMA)
 	musb_writel(musb->mregs, MUSB_HSDMA_INTR,
 		    DMA_INTR_STATUS_MSK | DMA_INTR_UNMASK_SET_MSK);
@@ -292,6 +333,8 @@ static int mtk_musb_init(struct musb *musb)
 		    USBCOM_INT_STATUS | DMA_INT_STATUS);
 	return 0;
 
+err_reset_mac:
+	phy_power_off(glue->phy);
 err_phy_power_on:
 	phy_exit(glue->phy);
 err_phy_init:
@@ -347,7 +390,8 @@ static int mtk_musb_exit(struct musb *musb)
 }
 
 static const struct musb_platform_ops mtk_musb_ops = {
-	.quirks = MUSB_DMA_INVENTRA,
+	.quirks = MUSB_DMA_INVENTRA | MUSB_G_NO_SKB_RESERVE |
+		  MUSB_G_RX_DMA_MODE1,
 	.init = mtk_musb_init,
 	.get_toggle = mtk_musb_get_toggle,
 	.set_toggle = mtk_musb_set_toggle,
@@ -391,6 +435,46 @@ static const struct musb_hdrc_config mtk_musb_hdrc_config = {
 	.ram_bits = MTK_MUSB_RAM_BITS,
 };
 
+/*
+ * Double-buffer the first three FIFOs both ways, so the next packet can be
+ * loaded or unloaded while the host moves the previous one. The rest is
+ * shrunk to fit the 8 KiB of FIFO RAM.
+ */
+static const struct musb_fifo_cfg mt6572_musb_mode_cfg[] = {
+	{ .hw_ep_num = 1, .style = FIFO_TX, .maxpacket = 512, .mode = BUF_DOUBLE, },
+	{ .hw_ep_num = 1, .style = FIFO_RX, .maxpacket = 512, .mode = BUF_DOUBLE, },
+	{ .hw_ep_num = 2, .style = FIFO_TX, .maxpacket = 512, .mode = BUF_DOUBLE, },
+	{ .hw_ep_num = 2, .style = FIFO_RX, .maxpacket = 512, .mode = BUF_DOUBLE, },
+	{ .hw_ep_num = 3, .style = FIFO_TX, .maxpacket = 512, .mode = BUF_DOUBLE, },
+	{ .hw_ep_num = 3, .style = FIFO_RX, .maxpacket = 512, .mode = BUF_DOUBLE, },
+	{ .hw_ep_num = 4, .style = FIFO_TX, .maxpacket = 512, },
+	{ .hw_ep_num = 4, .style = FIFO_RX, .maxpacket = 512, },
+	{ .hw_ep_num = 5, .style = FIFO_TX, .maxpacket = 256, },
+	{ .hw_ep_num = 5, .style = FIFO_RX, .maxpacket = 256, },
+	{ .hw_ep_num = 6, .style = FIFO_TX, .maxpacket = 64, },
+	{ .hw_ep_num = 6, .style = FIFO_RX, .maxpacket = 64, },
+	{ .hw_ep_num = 7, .style = FIFO_TX, .maxpacket = 64, },
+	{ .hw_ep_num = 7, .style = FIFO_RX, .maxpacket = 64, },
+};
+
+static const struct musb_hdrc_config mt6572_musb_hdrc_config = {
+	.fifo_cfg = mt6572_musb_mode_cfg,
+	.fifo_cfg_size = ARRAY_SIZE(mt6572_musb_mode_cfg),
+	.multipoint = true,
+	.dyn_fifo = true,
+	.num_eps = MTK_MUSB_MAX_EP_NUM,
+	.ram_bits = MTK_MUSB_RAM_BITS,
+};
+
+static const struct mtk_musb_data mtk_musb_data = {
+	.config = &mtk_musb_hdrc_config,
+};
+
+static const struct mtk_musb_data mt6572_musb_data = {
+	.config = &mt6572_musb_hdrc_config,
+	.reset_mac = true,
+};
+
 static const struct platform_device_info mtk_dev_info = {
 	.name = "musb-hdrc",
 	.id = PLATFORM_DEVID_AUTO,
@@ -424,7 +508,8 @@ static int mtk_musb_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	pdata->config = &mtk_musb_hdrc_config;
+	glue->data = of_device_get_match_data(dev);
+	pdata->config = glue->data->config;
 	pdata->platform_ops = &mtk_musb_ops;
 	pdata->mode = usb_get_dr_mode(dev);
 
@@ -513,20 +598,19 @@ static void mtk_musb_remove(struct platform_device *pdev)
 	usb_phy_generic_unregister(usb_phy);
 }
 
-#ifdef CONFIG_OF
 static const struct of_device_id mtk_musb_match[] = {
-	{.compatible = "mediatek,mtk-musb",},
+	{ .compatible = "mediatek,mt6572-musb", .data = &mt6572_musb_data },
+	{ .compatible = "mediatek,mtk-musb", .data = &mtk_musb_data },
 	{},
 };
 MODULE_DEVICE_TABLE(of, mtk_musb_match);
-#endif
 
 static struct platform_driver mtk_musb_driver = {
 	.probe = mtk_musb_probe,
 	.remove = mtk_musb_remove,
 	.driver = {
 		   .name = "musb-mtk",
-		   .of_match_table = of_match_ptr(mtk_musb_match),
+		   .of_match_table = mtk_musb_match,
 	},
 };
 

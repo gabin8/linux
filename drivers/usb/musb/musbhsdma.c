@@ -255,6 +255,10 @@ static int dma_channel_abort(struct dma_channel *channel)
 		musb_writew(mbase,
 			MUSB_HSDMA_CHANNEL_OFFSET(bchannel, MUSB_HSDMA_CONTROL),
 			0);
+		/* tell musb_g_rx() how far a mode 1 transfer got */
+		if (musb->ops->quirks & MUSB_G_RX_DMA_MODE1)
+			channel->actual_len = musb_read_hsdma_addr(mbase, bchannel) -
+					      musb_channel->start_addr;
 		musb_write_hsdma_addr(mbase, bchannel, 0);
 		musb_write_hsdma_count(mbase, bchannel, 0);
 		channel->status = MUSB_DMA_STATUS_FREE;

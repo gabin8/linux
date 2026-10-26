@@ -143,6 +143,7 @@ struct musb_io;
  */
 struct musb_platform_ops {
 
+#define MUSB_G_RX_DMA_MODE1	BIT(10)
 #define MUSB_G_NO_SKB_RESERVE	BIT(9)
 #define MUSB_DA8XX		BIT(8)
 #define MUSB_PRESERVE_SESSION	BIT(7)
@@ -288,6 +289,8 @@ struct musb {
 	struct delayed_work	deassert_reset_work;
 	struct delayed_work	finish_resume_work;
 	struct delayed_work	gadget_work;
+	struct work_struct	gadget_rx_work;
+	u16			gadget_rx_pending;	/* OUT eps with a packet to unload */
 	u16			hwvers;
 
 	u16			intrrxe;
