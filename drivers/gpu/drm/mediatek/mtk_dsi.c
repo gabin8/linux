@@ -194,6 +194,8 @@ struct mtk_dsi_driver_data {
 	bool has_size_ctl;
 	bool cmdq_long_packet_ctl;
 	bool support_per_frame_lp;
+	/* Extra HS_TRAIL byte clock cycles the D-PHY needs */
+	u32 hs_trail_ext;
 };
 
 struct mtk_dsi {
@@ -253,7 +255,8 @@ static void mtk_dsi_phy_timconfig(struct mtk_dsi *dsi)
 	timing->da_hs_prepare = (80 * data_rate_mhz + 4 * 1000) / 8000;
 	timing->da_hs_zero = (170 * data_rate_mhz + 10 * 1000) / 8000 + 1 -
 			     timing->da_hs_prepare;
-	timing->da_hs_trail = timing->da_hs_prepare + 1;
+	timing->da_hs_trail = timing->da_hs_prepare + 1 +
+			      dsi->driver_data->hs_trail_ext;
 
 	timing->ta_go = 4 * timing->lpx - 2;
 	timing->ta_sure = timing->lpx + 2;
@@ -1290,6 +1293,7 @@ static const struct mtk_dsi_driver_data mt6572_dsi_driver_data = {
 	.reg_vm_cmd_off = 0x130,
 	.has_shadow_ctl = false,
 	.has_size_ctl = false,
+	.hs_trail_ext = 8,
 };
 
 static const struct mtk_dsi_driver_data mt8183_dsi_driver_data = {
